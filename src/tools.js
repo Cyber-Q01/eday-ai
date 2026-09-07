@@ -80,7 +80,8 @@ export async function executeTool(name, args, userId, runId) {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.backendInternalKey}`, "Idempotency-Key": `ai-${runId}-${name}` },
         body: JSON.stringify(args),
       });
-      result = await res.json();
+      const t = await res.text().catch(() => "");
+      result = t ? JSON.parse(t) : { status: res.status }; // tolerate empty bodies
     } else {
       const fn = backend.actions[name];
       if (!fn) result = { error: "UNAVAILABLE", message: `${name} is not available yet.` };

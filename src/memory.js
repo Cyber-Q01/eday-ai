@@ -40,7 +40,11 @@ class MemoryStore {
   async _sbFetch(path, opts) {
     const res = await fetch(`${sbUrl()}/${path}`, { ...opts, headers: { ...SB_HEADERS(), ...(opts.headers || {}) } });
     if (!res.ok) throw new Error(`supabase ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    return res.status === 204 ? null : res.json();
+    // PostgREST returns 204 (RPC void) or 201 with an EMPTY body (return=minimal) —
+    // both mean "done, nothing to read". Never JSON.parse an empty response.
+    const t = await res.text().catch(() => "");
+    if (!t) return null;
+    try { return JSON.parse(t); } catch { return null; }
   }
   _warn(e) {
     if (!this.warned) { console.warn("[memory] supabase unavailable, falling back to memory:", e.message); this.warned = true; }
