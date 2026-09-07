@@ -1,0 +1,17 @@
+{
+  "name": "eday-ai",
+  "version": "0.1.2",
+  "description": "EDAY AI Orchestration Layer \u2014 chat API, intent engine, tool layer, confirmation gates, memory & audit. Deployable to Render.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "AUTO_PROGRESS=0 LLM_PROVIDER=mock EMBEDDING_PROVIDER=mock STORE_BACKEND=memory node --test tests/",
+    "demo": "node scripts/demo.js"
+  },
+  "license": "UNLICENSED"
+}

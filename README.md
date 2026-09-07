@@ -65,7 +65,7 @@ The service stores per-user memory + the audit trail in your existing Supabase p
 4. Restart → `/health` shows `store_backend: "supabase"`.
 
 What vector memory gives you (once connected):
-- Every completed action is embedded and stored (`kind='episodic'`) — embedding provider: **Gemini `text-embedding-004` (768-dim, free tier)** when `GEMINI_API_KEY` is set, otherwise a **deterministic mock embedder** (same 768-dim) so the whole pipeline works with no keys.
+- Every completed action is embedded and stored (`kind='episodic'`) — embedding provider: **Gemini `gemini-embedding-001`, pinned to 768-dim** (`batchEmbedContents` + `outputDimensionality`, free tier) when `GEMINI_API_KEY` is set, otherwise a **deterministic mock embedder** (same 768-dim) so the whole pipeline works with no keys.
 - Ask semantically: `GET /v1/memory/search?user_id=…&q=…` → top-5 similar memories via the HNSW index. ("What did I buy last week?" ≈ works against stored episodes.)
 - `DELETE /v1/memory?user_id=` wipes preferences, episodes AND embeddings (user right-to-erasure).
 - If Supabase is unreachable the service auto-falls back to in-memory and logs a warning.

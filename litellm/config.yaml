@@ -1,0 +1,47 @@
+# LiteLLM proxy config — free, self-hosted (MIT). One API key in front of many
+# model providers. EDAY AI calls http://<litellm>:4000/v1 and LiteLLM routes +
+# falls back + tracks cost per model.
+#
+# Keys are injected as env vars by docker-compose / Render (never hardcode):
+#   GEMINI_API_KEY, OPENAI_API_KEY, GROQ_API_KEY ...
+# Proxy master key: LITELLM_MASTER_KEY env.
+
+model_list:
+  # Gemini (free tier — default for testing)
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-flash-lite
+    litellm_params:
+      model: gemini/gemini-2.0-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+
+  # OpenAI
+  - model_name: gpt-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Groq (fast, cheap) — add GROQ_API_KEY to enable
+  - model_name: groq-fast
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+# Routing fallback + budget guardrails (example — tune to taste)
+router_settings:
+  num_retries: 2
+  request_timeout: 30
+  allowed_fails: 3
+  cooldown_time: 30
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  # max cost per day across all keys (USD) — hard safety cap for testing
+  max_budget: 2.0
+  budget_duration: 1d
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

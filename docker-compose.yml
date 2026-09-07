@@ -1,0 +1,38 @@
+# EDAY AI orchestration — local stack: LiteLLM proxy (free, self-hosted) + the AI service.
+# Usage:
+#   cp .env.example .env   # add GEMINI_API_KEY (and optionally OPENAI/GROQ)
+#   docker compose up --build
+#   → LiteLLM on :4000   ·   EDAY AI (with playground) on :3000
+# If .env has no keys, both services still run — EDAY AI falls back to mock mode.
+services:
+  litellm:
+    build: ./litellm
+    container_name: eday-litellm
+    ports:
+      - "4000:4000"
+    env_file: .env
+    environment:
+      LITELLM_MASTER_KEY: sk-litellm-local
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health/liveliness"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  eday-ai:
+    build: .
+    container_name: eday-ai
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      # route chat completions through the local LiteLLM proxy (OpenAI-compatible)
+      LLM_PROVIDER: litellm
+      LLM_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: sk-litellm-local   # proxy master key (alias = "litellm" provider)
+      LLM_MODEL: gemini-flash            # model alias defined in litellm/config.yaml
+    depends_on:
+      litellm:
+        condition: service_healthy
+    restart: unless-stopped

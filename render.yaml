@@ -1,0 +1,47 @@
+# Render blueprint — EDAY AI orchestration layer
+# Deploy: push repo to GitHub → render.com → "New Blueprint Instance" → connect the repo.
+# render.yaml is auto-detected; no manual service setup needed.
+# NOTE: env vars marked `sync: false` are secrets — after first deploy, add them in
+# Render dashboard: eday-ai service → Environment (GEMINI_API_KEY, SUPABASE_URL,
+# SUPABASE_SERVICE_ROLE_KEY). Never commit real keys.
+services:
+  - type: web
+    name: eday-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    plan: starter          # free tier works too; starter sleeps less
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: LLM_PROVIDER
+        value: auto        # auto = openai key -> gemini key -> mock (set GEMINI_API_KEY for real)
+      - key: GEMINI_API_KEY
+        sync: false        # SECRET — set in dashboard: https://aistudio.google.com/apikey (free tier)
+      - key: OPENAI_API_KEY
+        sync: false        # optional — only if you use OpenAI directly
+      - key: LLM_BASE_URL
+        value: ""          # optional: LiteLLM/Groq OpenAI-compatible base (e.g. http://litellm:4000/v1)
+      - key: LLM_MODEL
+        value: ""          # optional override, e.g. gemini-2.5-flash (default when empty)
+      - key: SUPABASE_URL
+        sync: false        # SECRET — your Eday project URL (Project Settings -> API)
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false        # SECRET — your Eday service_role key (server-only!)
+      - key: EMBEDDING_PROVIDER
+        value: auto        # gemini when GEMINI_API_KEY set, else mock (768-dim)
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: SKIP_CONFIRM
+        value: "false"     # payment confirmations always ON in production
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: API_KEY
+        sync: false        # optional: require `Authorization: Bearer <API_KEY>` on /v1/*
+      - key: MOCK_WALLET_BALANCE
+        value: "50000"
+
+# LiteLLM self-hosted proxy is OPTIONAL (free, MIT): run locally with
+# `docker compose up` or add a second Render service from litellm/Dockerfile,
+# then point the app at it with LLM_PROVIDER=litellm + LLM_BASE_URL.
