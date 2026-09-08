@@ -47,7 +47,10 @@ class MemoryStore {
     try { return JSON.parse(t); } catch { return null; }
   }
   _warn(e) {
-    if (!this.warned) { console.warn("[memory] supabase unavailable, falling back to memory:", e.message); this.warned = true; }
+    if (!this.warned) {
+      console.warn("[memory] supabase unavailable, falling back to memory:", e.message, "|", e.name || "", e.stack ? "(" + e.stack.split("\n")[1]?.trim() + ")" : "");
+      this.warned = true;
+    }
   }
   _supabase() { return this.backend === "supabase"; }
 

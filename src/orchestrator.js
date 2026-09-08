@@ -82,6 +82,17 @@ function mapIntentToCall(intent) {
     return { name: "ride_quote", args: { pickup: e.pickup || inferPickup(e.description), destination: e.destination, ride_type: null }, missing: missingOf(e, ["destination"]) };
   if (intent.vertical === "stay" && (sub === "stay_book" || sub === "travel"))
     return { name: "stay_search", args: { city: e.city || guessCity(e.description), nights: e.nights || 1 }, missing: [] };
+  // CHOP — food delivery
+  if (intent.vertical === "chop" && sub === "chop_order")
+    return { name: "chop_order", args: { city: e.city || guessCity(e.description), description: e.description || "" }, missing: missingOf(e, ["description"]) };
+  // SHOP — commerce
+  if (intent.vertical === "shop" && sub === "shop_order")
+    return { name: "shop_order", args: { description: e.description || "" }, missing: missingOf(e, ["description"]) };
+  // WORK — gigs/services
+  if (intent.vertical === "work" && sub === "work_request")
+    return { name: "work_request", args: { description: e.description || "", city: e.city || guessCity(e.description) }, missing: missingOf(e, ["description"]) };
+  if (intent.intent === "wallet" && sub === "topup")
+    return { name: "wallet_topup_start", args: { amount_ngn: e.amount_ngn }, missing: missingOf(e, ["amount_ngn"]) };
   if (intent.intent === "wallet") return { name: "wallet_balance", args: {}, missing: [] };
   if (intent.intent === "track") {
     const ref = e.order_ref || extractRef(e.description || "");
@@ -124,6 +135,7 @@ function askMissing(call) {
     disco: "the electricity provider (e.g. ibedc)",
     order_ref: "your order/reference ID",
     pickup: "the pickup address",
+    description: "what you'd like (e.g. \"jollof rice and chicken\", \"a plumber\", \"a smartwatch\")",
   };
   return `Almost there — I need ${call.missing.map((m) => label[m] || m).join(" and ")}.`;
 }

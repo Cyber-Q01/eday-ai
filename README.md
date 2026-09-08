@@ -91,6 +91,21 @@ What vector memory gives you (once connected):
 docker build -t eday-ai . && docker run -p 3000:3000 -e LLM_MODE=mock eday-ai
 ```
 
+## EDAY service coverage (all verticals in ONE assistant)
+
+| Vertical | Tools | Try saying |
+|---|---|---|
+| 🚗 **Ride** | `ride_quote`, `ride_book` (Bike/Car/Premium offers) | “book a ride from Ikeja to Lekki” → pick a type |
+| 📦 **Send** | `send_quote`, `send_book`, `send_track` | “send a package from Ikeja to Yaba” → “book it” |
+| 🍛 **Chop** | `chop_order` (menu matching, per-city vendors) | “order jollof rice and chicken in Ibadan” |
+| 🛍️ **Shop** | `shop_order` (catalog matching) | “buy a smartwatch” |
+| 🏨 **Stay** | `stay_search`, `stay_book` | “find a hotel in Ibadan for 1 night” → pick number |
+| 🛠️ **Work** | `work_request` (pro matching) | “I need a plumber in Ibadan” |
+| 💡 **Bills** | `airtime_purchase`, `data_purchase`, `electricity_purchase` | “buy ₦500 MTN airtime for 08031234567” |
+| 💰 **Wallet** | `wallet_balance`, `wallet_topup_start` | “top up my wallet with ₦20,000” |
+
+Every payment tool is confirm-gated (“Reply Yes to confirm”) and every completed action is stored as a memory episode + vector embedding (see Supabase section). All six verticals currently run against the simulated EDAY middleware (`TOOL_MODE=mock`) so the orchestration layer is fully testable before the real backend contract goes live.
+
 ## Behaviour guarantees (non-negotiable)
 
 - **Every payment tool requires explicit user confirmation** in-chat before execution (per-action, unless `SKIP_CONFIRM=true` for automated tests only).

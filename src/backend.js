@@ -216,6 +216,110 @@ export const actions = {
     return { success: true, order, message: `${prop.name} confirmed for ${nights} night(s) — ₦${total.toLocaleString()} paid from wallet. Order ID: ${order.id}` };
   },
 
+  // ---------- CHOP (food delivery) ----------
+  chop_order(userId, args = {}) {
+    const { city = "Lagos", description = "" } = args;
+    const text = String(description || "").toLowerCase();
+    const menu = [
+      { kw: ["jollof", "rice", "chicken"], label: "Jollof rice & chicken", price: 4500 },
+      { kw: ["amala", "ewedu", "gbegiri"], label: "Amala & ewedu", price: 3500 },
+      { kw: ["suya", "grill"], label: "Suya platter", price: 6000 },
+      { kw: ["shawarma"], label: "Chicken shawarma", price: 4000 },
+      { kw: ["small chops", "snacks"], label: "Small chops box", price: 3500 },
+    ];
+    const pick = menu.find((m) => m.kw.some((k) => text.includes(k)));
+    const item = pick || { label: "Chef's special", price: 5000 };
+    const vendor = { ibadan: "Amala Skillet (Bodija)", lagos: "Jollof Republic (Yaba)", abuja: "Suya & Co (Wuse)" }[String(city).toLowerCase()] || "EDAY Kitchen";
+    const total = item.price;
+    const w = getWallet(userId);
+    if (w.balance < total) return { error: "INSUFFICIENT_FUNDS", message: `Your wallet balance is ₦${w.balance.toLocaleString()}.` };
+    ledger(userId, -total, "debit", `chop_${uid()}`, { service: "chop", item: item.label, vendor });
+    const order = {
+      id: `ORD_${uid().slice(0, 10)}`, userId, vertical: "chop", status: "confirmed",
+      vendor, item: item.label, city: city || "Lagos", amount: total, eta_minutes: 40,
+      events: [{ at: nowIso(), status: "confirmed", note: `Order confirmed: ${item.label} from ${vendor}` }], createdAt: nowIso(),
+    };
+    state.orders.set(order.id, order);
+    scheduleProgress(order.id, "preparing", "Kitchen is preparing your order", "out_for_delivery", "Rider picked up your order", "delivered", "Order delivered ✓");
+    return { success: true, order, message: `🍛 ${item.label} (₦${total.toLocaleString()}) ordered from ${vendor}, ${city || "Lagos"}. ETA 40 min. Order ID: ${order.id}` };
+  },
+
+  // ---------- SHOP (commerce) ----------
+  shop_order(userId, args = {}) {
+    const { description = "" } = args;
+    const text = String(description || "").toLowerCase();
+    const catalog = [
+      { kw: ["watch"], label: "Smartwatch Pro", price: 45000 },
+      { kw: ["sneaker", "shoe", "trainer"], label: "Running sneakers", price: 38000 },
+      { kw: ["phone"], label: "Smartphone X2", price: 185000 },
+      { kw: ["headphone", "earbud", "airpod"], label: "Wireless earbuds", price: 22000 },
+      { kw: ["power bank", "charger"], label: "20k mAh power bank", price: 15000 },
+      { kw: ["bag", "backpack"], label: "EDAY travel backpack", price: 28000 },
+    ];
+    const pick = catalog.find((c) => c.kw.some((k) => text.includes(k)));
+    if (!pick) return { error: "NO_MATCH", message: "I couldn't find that in the EDAY mall. Try: smartwatch, sneakers, phone, earbuds, power bank, backpack." };
+    const w = getWallet(userId);
+    if (w.balance < pick.price) return { error: "INSUFFICIENT_FUNDS", message: `Your wallet balance is ₦${w.balance.toLocaleString()}.` };
+    ledger(userId, -pick.price, "debit", `shop_${uid()}`, { service: "shop", item: pick.label });
+    const order = {
+      id: `ORD_${uid().slice(0, 10)}`, userId, vertical: "shop", status: "confirmed",
+      item: pick.label, amount: pick.price, eta_days: 2,
+      events: [{ at: nowIso(), status: "confirmed", note: `Order confirmed: ${pick.label}` }], createdAt: nowIso(),
+    };
+    state.orders.set(order.id, order);
+    scheduleProgress(order.id, "packed", "Item packed at EDAY hub", "in_transit", "Shipment in transit", "delivered", "Delivered ✓");
+    return { success: true, order, message: `🛍️ ${pick.label} (₦${pick.price.toLocaleString()}) ordered from EDAY Mall. Delivery 2 days. Order ID: ${order.id}` };
+  },
+
+  // ---------- WORK (gig/services) ----------
+  work_request(userId, args = {}) {
+    const { description = "", city = "Lagos" } = args;
+    const text = String(description || "").toLowerCase();
+    const pros = [
+      { kw: ["plumb"], trade: "Plumber", price: 15000, name: "Musa B." },
+      { kw: ["electric"], trade: "Electrician", price: 12000, name: "Tunde A." },
+      { kw: ["clean"], trade: "Cleaner", price: 10000, name: "Blessing O." },
+      { kw: ["mechanic"], trade: "Mechanic", price: 20000, name: "Emeka N." },
+      { kw: ["tutor", "lesson", "teacher"], trade: "Tutor", price: 8000, name: "Aisha K." },
+      { kw: ["tailor", "sew"], trade: "Tailor", price: 9000, name: "Funke D." },
+      { kw: ["hair", "barber"], trade: "Hair stylist", price: 7000, name: "Zainab M." },
+    ];
+    const pick = pros.find((p) => p.kw.some((k) => text.includes(k)));
+    if (!pick) return { error: "NO_MATCH", message: "I couldn't match that to a service. Try: plumber, electrician, cleaner, mechanic, tutor, tailor, barber." };
+    const w = getWallet(userId);
+    if (w.balance < pick.price) return { error: "INSUFFICIENT_FUNDS", message: `Your wallet balance is ₦${w.balance.toLocaleString()}.` };
+    ledger(userId, -pick.price, "debit", `work_${uid()}`, { service: "work", trade: pick.trade });
+    const order = {
+      id: `ORD_${uid().slice(0, 10)}`, userId, vertical: "work", status: "pro_matched",
+      trade: pick.trade, pro: pick.name, city: city || "Lagos", amount: pick.price, eta_minutes: 60,
+      events: [{ at: nowIso(), status: "pro_matched", note: `Matched with ${pick.name} (${pick.trade})` }], createdAt: nowIso(),
+    };
+    state.orders.set(order.id, order);
+    scheduleProgress(order.id, "on_the_way", `${pick.name} is on the way`, "in_progress", "Work started", "completed", "Job completed ✓", 20000);
+    return { success: true, order, message: `🛠️ ${pick.trade}: ${pick.name} matched in ${city || "Lagos"} — ₦${pick.price.toLocaleString()} (arrival ~60 min). Job ID: ${order.id}` };
+  },
+
+  // ---------- WALLET top-up ----------
+  wallet_topup_start(userId, { amount_ngn }) {
+    const amt = Number(amount_ngn);
+    if (!(amt >= 100 && amt <= 2000000)) return { error: "INVALID_AMOUNT", message: "Top-up must be between ₦100 and ₦2,000,000." };
+    const ref = `TP_${uid().slice(0, 10)}`;
+    // Mock middleware: "external payment" lands after ~10s (gated by AUTO_PROGRESS like order events)
+    if (process.env.AUTO_PROGRESS !== "0") {
+      setTimeout(() => {
+        const w = getWallet(userId);
+        ledger(userId, amt, "credit", ref, { service: "wallet_topup" });
+        console.log(`[wallet] ${userId} credited ₦${amt.toLocaleString()} (${ref}) — balance ₦${w.balance.toLocaleString()}`);
+      }, 10_000);
+    }
+    return {
+      success: true,
+      ref,
+      amount_ngn: amt,
+      message: `Top-up of ₦${amt.toLocaleString()} started. Transfer to EDAY Wallet (GTBank ••0123456789) with reference ${ref} — your wallet updates automatically once payment confirms.`,
+    };
+  },
+
   support_ticket(userId, { description }) {
     const ticketId = `TK_${uid().slice(0, 8)}`;
     return { success: true, ticket_id: ticketId, message: `Support ticket ${ticketId} created. Our team will reply within 2 hours.` };

@@ -55,10 +55,11 @@ export function confirmationText(name, args = {}, ctx = {}) {
     send_book: `Book courier ${args.provider || ""} for ₦${amt} (${args.pickup || ""} → ${args.destination || ""})?`,
     ride_book: `Book ${args.ride_type || "Car"} for ₦${amt} (${args.pickup || ""} → ${args.destination || ""})?`,
     stay_book: `Book ${args.property_name || "this stay"} for ₦${amt}?`,
-    chop_order: `Place food order for ₦${amt}?`,
-    shop_order: `Place shop order for ₦${amt}?`,
-    work_request: `Create work request for ₦${amt}?`,
-    wallet_topup_start: `Start a wallet top-up of ₦${amt}?`,
+    // chop/shop/work amounts are matched at execution → preview without a false price
+    chop_order: `Place this food order${args.description ? ` — ${String(args.description).slice(0, 60)}` : ""}? (menu total confirmed before delivery)`,
+    shop_order: `Buy${args.description ? ` ${String(args.description).slice(0, 60)}` : " this item"} from EDAY Mall?`,
+    work_request: `Hire${args.description ? ` ${String(args.description).slice(0, 60)}` : " a professional"} for this job?`,
+    wallet_topup_start: amt ? `Start a wallet top-up of ₦${amt}?` : `Start a wallet top-up?`,
   };
   return pieces[name] || `Confirm this action?`;
 }

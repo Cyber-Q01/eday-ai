@@ -31,6 +31,7 @@ async function geminiEmbed(text) {
         },
       ],
     }),
+    signal: AbortSignal.timeout(20_000), // never let a stalled embedder block the flow
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");

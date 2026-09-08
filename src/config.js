@@ -45,6 +45,10 @@ export const config = {
   embeddingProvider: env("EMBEDDING_PROVIDER", "auto"), // auto | gemini | mock
   embeddingModel: env("EMBEDDING_MODEL", "gemini-embedding-001"),
   embeddingDim: parseInt(env("EMBEDDING_DIM", "768"), 10),
+  // fallback models tried in order when the primary LLM model returns 429/5xx
+  // (Gemini free tier overloads are common — e.g. "gemini-2.5-flash-lite,gemini-flash-latest")
+  llmFallbackModels: env("LLM_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-flash-latest")
+    .split(",").map((s) => s.trim()).filter(Boolean),
   backendInternalUrl: env("BACKEND_INTERNAL_URL", ""),
   backendInternalKey: env("BACKEND_INTERNAL_KEY", ""),
   // Supabase (user's BaaS project) for persistent memory + audit
@@ -80,7 +84,14 @@ export function llmEndpoint() {
   const def = PROVIDER_DEFAULTS[p] || PROVIDER_DEFAULTS.openai;
   const base = (config.llmBaseUrl || def.base).replace(/\/$/, "");
   const key = p === "gemini" ? config.geminiApiKey : config.openaiApiKey;
-  return { provider: p, base, model: config.llmModel || def.model, key };
+  return {
+    provider: p,
+    base,
+    model: config.llmModel || def.model,
+    key,
+    // Gemini-only: sibling models to fall back to when the primary is overloaded
+    fallbackModels: p === "gemini" ? config.llmFallbackModels : [],
+  };
 }
 
 export function resolveStoreBackend() {

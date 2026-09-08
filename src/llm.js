@@ -9,18 +9,18 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
   const ep = llmEndpoint();
   if (!ep) throw new Error("LLM not configured (mock mode)");
   const started = Date.now();
-  const body = {
-    model: ep.model,
-    messages,
-    temperature,
-  };
-  if (useJson) body.response_format = { type: "json_object" };
+  const models = Array.from(new Set([ep.model, ...(ep.fallbackModels || [])]));
+  const base = { messages, temperature };
+  if (useJson) base.response_format = { type: "json_object" };
 
-  const doCall = async () => {
+  // One HTTP attempt. Hard 35s timeout so a stalled provider can never hang a
+  // conversation indefinitely — it becomes a retryable failure instead.
+  const callOnce = async (model, withJson) => {
     const res = await fetch(`${ep.base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${ep.key}` },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...base, model, ...(withJson ? {} : { response_format: undefined }) }),
+      signal: AbortSignal.timeout(35_000),
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
@@ -31,34 +31,37 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
     return res.json();
   };
 
-  // Retry transient provider overloads (429/5xx) with exponential backoff.
-  const attempt = async (n) => {
-    try {
-      return await doCall();
-    } catch (e) {
-      const retryable = e.status && (e.status === 429 || e.status >= 500) && n < 3;
-      if (retryable) {
-        const waitMs = Math.round(1000 * 2 ** n + Math.random() * 500);
-        log(`llm: HTTP ${e.status} — retry ${n + 1}/3 in ${waitMs}ms`);
-        await new Promise((r) => setTimeout(r, waitMs));
-        return attempt(n + 1);
-      }
-      throw e;
-    }
-  };
-
   let data;
-  try {
-    data = await attempt(0);
-  } catch (e) {
-    // some providers/models reject response_format json_object → retry plain
-    if (useJson && e.status === 400) {
-      body.response_format = undefined;
-      delete body.response_format;
-      log(`llm: response_format rejected, retrying plain (${e.message.slice(0, 120)})`);
-      data = await attempt(0);
-    } else throw e;
+  let lastErr;
+  let jsonMode = useJson;
+  outer: for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        data = await callOnce(model, jsonMode);
+        break outer;
+      } catch (e) {
+        lastErr = e;
+        const retryable = e.status === 429 || e.status >= 500 || e.name === "TimeoutError" || e.name === "AbortError";
+        // 400 on json_object → drop response_format and retry the same model
+        if (e.status === 400 && jsonMode) {
+          log(`llm: response_format rejected (${model}), retrying plain`);
+          jsonMode = false;
+          attempt--;
+          continue;
+        }
+        if (!retryable) break outer; // hard error (401, bad request...) — surface it
+        if (attempt === 0) {
+          const waitMs = 1000 + Math.round(Math.random() * 800);
+          log(`llm: ${e.status || e.name} (${model}) — retry in ${waitMs}ms`);
+          await new Promise((r) => setTimeout(r, waitMs));
+        } else if (models.length > 1 && model !== models[models.length - 1]) {
+          log(`llm: ${e.status || e.name} — ${model} overloaded, trying fallback model`);
+          break; // next model in chain
+        }
+      }
+    }
   }
+  if (!data) throw lastErr || new Error("LLM call failed (no models available)");
   const text = data.choices?.[0]?.message?.content ?? "";
   log(`llm: provider=${ep.provider} model=${data.model ?? ep.model} tokens=${data.usage?.total_tokens ?? "?"} ms=${Date.now() - started}`);
   return { text, model: data.model ?? ep.model };
