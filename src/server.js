@@ -32,7 +32,7 @@ const server = createServer(async (req, res) => {
     return ok(res, {
       status: "ok",
       service: "eday-ai",
-      version: "0.1.4",
+      version: "0.1.5",
       llm_provider: effectiveLlmMode(),
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),

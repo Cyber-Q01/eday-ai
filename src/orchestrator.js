@@ -213,7 +213,7 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     return reply(session, sid, "I didn't catch that. Could you rephrase? For example: “buy ₦500 MTN airtime for 08031234567” or “send a package from Ikeja to Yaba”.");
   }
   if (call.missing.length) {
-    const prefs = fillFromPrefs(session, call);
+    const prefs = await fillFromPrefs(session, call);
     if (prefs) return prefs;
     return reply(session, sid, askMissing(call));
   }
@@ -372,11 +372,12 @@ async function maybeLearnPref(session, tool, args) {
   } catch (e) { /* never break the reply on memory */ }
 }
 
-function fillFromPrefs(session, call) {
-  const mem = memory.recall(session.userId);
-  if (!mem.prefs.length) return null;
+async function fillFromPrefs(session, call) {
+  let mem = null;
+  try { mem = await memory.recall(session.userId); } catch { /* memory must never crash the reply path */ }
+  if (!mem || !Array.isArray(mem.prefs) || !mem.prefs.length) return null;
   const map = { phone: "default_airtime_phone", network: "default_network", meter_number: "default_meter" };
-  for (const key of call.missing) {
+  for (const key of [...call.missing]) {
     const prefKey = map[key];
     if (!prefKey) continue;
     const pref = mem.prefs.find((p) => p.key === prefKey);

@@ -122,3 +122,22 @@ test("concurrent wallet debits can't go negative", async () => {
   assert.ok(bal >= 0, "balance must never be negative");
   assert.equal(bal0 % 5000, bal % 5000, "balance should drop in exact 5000 steps");
 });
+
+test("partial info (no amount) asks for the missing field — never crashes (fillFromPrefs async fix)", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "buy mtn airtime for 08031234567" });
+  // must get a helpful reply (not a TypeError)
+  assert.match(r.reply, /need|Almost there|amount|phone/i);
+});
+
+test("partial send (no destination) asks for destination — never crashes", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "send a package from ikeja" });
+  assert.match(r.reply, /need|Almost there|destination/i);
+});
+
+test("partial electricity (no amount) asks politely — never crashes", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "pay electricity for meter 41234567890" });
+  assert.match(r.reply, /need|Almost there|amount/i);
+});
