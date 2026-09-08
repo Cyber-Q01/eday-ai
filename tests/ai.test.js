@@ -141,3 +141,64 @@ test("partial electricity (no amount) asks politely — never crashes", async ()
   const r = await handleMessage({ ...s, message: "pay electricity for meter 41234567890" });
   assert.match(r.reply, /need|Almost there|amount/i);
 });
+
+// ---------- context retention across turns ----------
+test("context: ride fare question answered from last quote", async () => {
+  const s = fresh();
+  const r1 = await handleMessage({ ...s, message: "book a ride from ikeja to lekki" });
+  assert.match(r1.reply, /Bike:/);
+  const r2 = await handleMessage({ ...s, message: "what is the price of the bike" });
+  assert.match(r2.reply, /bike/i);
+  assert.match(r2.reply, /₦/);
+});
+
+test("context: 'do the same again' re-runs last confirmed purchase", async () => {
+  const s = fresh();
+  await handleMessage({ ...s, message: "buy 500 naira mtn airtime for 08031234567" });
+  const bal1 = backend.actions.wallet_balance(s.user_id).balance;
+  const y = await handleMessage({ ...s, message: "yes" });
+  assert.equal(backend.actions.wallet_balance(s.user_id).balance, bal1 - 500);
+  const ag = await handleMessage({ ...s, message: "do the same again" });
+  assert.equal(ag.pending_confirm, true, "reuse goes through the confirm gate");
+  const y2 = await handleMessage({ ...s, message: "yes" });
+  assert.equal(y2.pending_confirm, false);
+  assert.equal(backend.actions.wallet_balance(s.user_id).balance, bal1 - 1000, "charged again");
+});
+
+test("context: 'what did i just do' recalls last action", async () => {
+  const s = fresh();
+  await handleMessage({ ...s, message: "buy 500 naira mtn airtime for 08031234567" });
+  await handleMessage({ ...s, message: "yes" });
+  const r = await handleMessage({ ...s, message: "what did i just do" });
+  assert.match(r.reply, /airtime purchase/i);
+});
+
+test("context: track my last order after a chop order", async () => {
+  const s = fresh();
+  await handleMessage({ ...s, message: "order jollof rice and chicken in ibadan" });
+  const y = await handleMessage({ ...s, message: "yes" });
+  assert.match(y.reply, /ORD_/);
+  const r = await handleMessage({ ...s, message: "track my last order" });
+  assert.match(r.reply, /ORD_/);
+  assert.match(r.reply, /chop/);
+});
+
+test("context: edit a pending confirmation (make it 1000 instead)", async () => {
+  const s = fresh();
+  const r1 = await handleMessage({ ...s, message: "buy 500 naira mtn airtime for 08031234567" });
+  assert.equal(r1.pending_confirm, true);
+  const ed = await handleMessage({ ...s, message: "make it 1000 instead" });
+  assert.equal(ed.pending_confirm, true);
+  assert.match(ed.reply, /₦1,000/);
+  const bal0 = backend.actions.wallet_balance(s.user_id).balance;
+  const y = await handleMessage({ ...s, message: "yes" });
+  assert.equal(backend.actions.wallet_balance(s.user_id).balance, bal0 - 1000);
+});
+
+test("context: track-my-last-order with no order yet answers helpfully (no hallucinated ref)", async () => {
+  const s = fresh();
+  await handleMessage({ ...s, message: "buy 500 naira mtn airtime for 08031234567" });
+  await handleMessage({ ...s, message: "yes" }); // airtime → no order id
+  const r = await handleMessage({ ...s, message: "track my last order" });
+  assert.match(r.reply, /don't have a bookable order|order IDs come from/i);
+});

@@ -21,6 +21,11 @@ function getSession(sessionId, userId, channel) {
       pendingConfirm: null,        // {kind:'tool', name, args, text, ref} | {kind:'plan', steps, text, ref}
       plan: null,                  // {id, steps:[{tool,args,confirm,status,result}], cursor}
       prefsPrompted: false,
+      lastQuote: null,             // latest courier quote shown
+      lastRide: null,              // latest ride offer list shown
+      stayResults: null,           // latest stay search results
+      lastAction: null,            // {name, args, message} — last executed action (for "again"/"same")
+      lastOrderRef: null,          // id of the most recent order/booking/ticket
     });
   }
   return sessions.get(sessionId);
@@ -44,6 +49,27 @@ function friendlyError(e) {
 }
 
 // ---------- intent resolution ----------
+// Rich session context for the classifier: recent turns + live state (quotes,
+// last action) + saved prefs + recent episodes — so follow-ups ("same again",
+// "that number", "what was the bike price?") have what they need.
+async function sessionContext(session) {
+  const parts = [];
+  const turns = session.history.slice(-10).map((h) => `${h.role}: ${String(h.content).slice(0, 160)}`).join("\n");
+  parts.push(`Recent conversation:\n${turns || "(none)"}`);
+  if (session.lastAction) parts.push(`Last thing done: ${session.lastAction.name} — ${String(session.lastAction.message || "").slice(0, 160)}`);
+  if (session.lastRide) parts.push(`Ride being considered: ${session.lastRide.pickup} → ${session.lastRide.destination} | fares: ${session.lastRide.rides.map((x) => `${x.type} ${fmtNgn(x.fare)}`).join(", ")}`);
+  if (session.lastQuote) parts.push(`Courier quote shown: ${session.lastQuote.provider} ${fmtNgn(session.lastQuote.amount)} · ${session.lastQuote.pickup} → ${session.lastQuote.destination}`);
+  if (session.stayResults) parts.push(`Stays shown: ${session.stayResults.map((s, i) => `${i + 1}. ${s.name} ${fmtNgn(s.price_per_night)}/night`).join(" | ")}`);
+  if (session.lastOrderRef) parts.push(`Last order id: ${session.lastOrderRef}`);
+  try {
+    const mem = await memory.recall(session.userId);
+    if (mem?.prefs?.length) parts.push(`Saved prefs: ${mem.prefs.map((p) => `${p.key}=${JSON.stringify(p.value)}`).join(", ")}`);
+    const eps = (mem?.recent_episodes || []).slice(0, 3);
+    if (eps.length) parts.push(`Recent activity: ${eps.map((e) => e.summary).join(" | ")}`);
+  } catch { /* context never blocks classification */ }
+  return parts.join("\n\n");
+}
+
 async function resolveIntent(text, session) {
   if (isMock()) {
     const m = normalizeIntent(mockClassifyIntent(text));
@@ -51,7 +77,7 @@ async function resolveIntent(text, session) {
     return m;
   }
   try {
-    const tail = session.history.slice(-4).map((h) => `${h.role}: ${String(h.content).slice(0, 200)}`).join("\n");
+    const tail = await sessionContext(session);
     const m = normalizeIntent(await llmClassifyIntent(text, tail));
     // LLMs often label concrete requests phrased as questions as "help"
     // (e.g. "what do I need to give you to send a package to Ikeja?").
@@ -144,8 +170,9 @@ function inferPickup(desc = "") {
   return m ? m[1].trim() : "";
 }
 function extractRef(desc = "") {
-  const m = desc.match(/\b(ORD|BK|VT|EC)_?[A-Za-z0-9]+\b/i);
-  return m ? m[0].replace("_", "_") : "";
+  // require ≥4 chars after the prefix so plain words like "order" never match
+  const m = desc.match(/\b(ORD|BK|VT|EC|TP)_?[A-Za-z0-9]{4,}\b/i);
+  return m ? m[0] : "";
 }
 function guessCity(desc = "") {
   const cities = ["abuja", "lagos", "ibadan", "ph", "port harcourt", "kaduna", "kano", "owerri", "enugu", "benin"];
@@ -206,6 +233,9 @@ export async function handleMessage({ session_id, user_id, channel, message, con
       audit.write({ kind: "confirm", action: "declined", user_id: session.userId, session: sid, ref: was.ref });
       return reply(session, sid, "❌ Cancelled — nothing was charged. Is there anything else I can help with?");
     }
+    // mid-confirm edits: "make it 1000", "change the phone to 0805…", "mtn instead"
+    const edited = tryEditPending(session, sid, message);
+    if (edited) return edited;
     // ambiguous while waiting
     session.history.pop(); // don't store this as regular user turn yet
     return reply(session, sid, `Please reply **Yes** to confirm or **No** to cancel.\n\n${session.pendingConfirm.text}`);
@@ -215,6 +245,11 @@ export async function handleMessage({ session_id, user_id, channel, message, con
   //     pick a stay result number, choose a ride type
   const qa = handleQuickAction(session, sid, message);
   if (qa) return qa;
+
+  // context-aware answers & follow-up reuse ("what was the bike fare?",
+  // "do the same again", "track my last order")
+  const cx = handleContextual(session, sid, message);
+  if (cx) return cx;
 
   // bare acknowledgements with nothing pending should not fall through to "help"
   if (/^\s*(yes|yeah|yep|ok|okay|sure|no|nope|fine)\s*[.!]*\s*$/i.test(message)) {
@@ -316,7 +351,111 @@ export async function handleMessage({ session_id, user_id, channel, message, con
 
   const r = await executeTool(call.name, call.args, session.userId, uid("run"));
   if (r.error) return reply(session, sid, friendlyError(r));
+  storeLastAction(session, call.name, call.args, r);
   return reply(session, sid, r.message || "Done.");
+}
+
+// ---- context retention helpers ---------------------------------------------
+
+function storeLastAction(session, name, args, result) {
+  if (!result || !result.success) return;
+  session.lastAction = { name, args: { ...(args || {}) }, message: String(result.message || "") };
+  const oid = result.order?.id || result.bookingId || result.ticket_id || null;
+  if (oid) session.lastOrderRef = oid;
+}
+
+/** While a confirmation is pending, accept edits: "make it 1000", "mtn instead",
+ *  "change phone to 0805…" → update args and re-ask (no double audit row). */
+function tryEditPending(session, sid, message) {
+  const pc = session.pendingConfirm;
+  const args = pc.args || {};
+  const m = message.trim().toLowerCase();
+  const editish = /\b(make it|change|instead|actually|update|use)\b/.test(m) || /\b\d{3,7}\b/.test(m) && !/^(yes|no|ok|sure)\b/.test(m);
+  if (!editish) return null;
+
+  let changed = false;
+  const num = m.match(/(\d{3,7})(?:\s*(?:naira|ngn|k|kobo))?/);
+  if (num && (args.amount_ngn !== undefined || args.amount !== undefined)) {
+    if (args.amount_ngn !== undefined) args.amount_ngn = parseInt(num[1], 10);
+    if (args.amount !== undefined) args.amount = parseInt(num[1], 10);
+    changed = true;
+  }
+  const phone = m.match(/\b(0[789][01]\d{8})\b/);
+  if (phone && args.phone !== undefined) { args.phone = phone[1]; changed = true; }
+  const meter = m.match(/\b(\d{11})\b/);
+  if (meter && args.meter_number !== undefined) { args.meter_number = meter[1]; changed = true; }
+  for (const net of ["mtn", "glo", "airtel", "9mobile"]) {
+    if (new RegExp(`\\b${net}\\b`).test(m) && args.network !== undefined) { args.network = net; changed = true; }
+  }
+  if (!changed) return null;
+
+  const text = confirmationText(pc.name, args) + "\n\nReply **Yes** to confirm, **No** to cancel.";
+  pc.text = text;
+  session.history.push({ role: "assistant", content: text });
+  audit.write({ kind: "confirm", action: "updated", user_id: session.userId, session: sid, ref: pc.ref, tool: pc.name, args_summary: summarizeEntities(args) });
+  return { session_id: sid, reply: text, actions: [{ id: "yes", title: "✅ Yes, pay" }, { id: "no", title: "❌ No" }], pending_confirm: true, ref: pc.ref };
+}
+
+/** Deterministic answers that need ONLY session state (cheap, works in mock too):
+ *  questions about the current ride quote / courier quote / stays / last action,
+ *  plus "do the same again" reuse of the last executed action. */
+function handleContextual(session, sid, message) {
+  const m = message.trim().toLowerCase();
+  if (!m) return null;
+
+  // — price/fare questions about the current ride offer list —
+  if (session.lastRide && /\b(price|fare|cost|how much)\b/.test(m) && /\b(bike|car|premium)\b/.test(m)) {
+    const type = (m.match(/\b(bike|car|premium)\b/) || [])[1];
+    const ride = (session.lastRide.rides || []).find((x) => x.type.toLowerCase() === type);
+    if (ride) return reply(session, sid, `The **${type}** fare is **${fmtNgn(ride.fare)}** (${session.lastRide.pickup} → ${session.lastRide.destination}). Want me to book it?`);
+  }
+  // — "what were the options/prices again?" (ride list re-show) —
+  if (session.lastRide && /\b(option|price|list|again)\b/.test(m) && /\b(show|what|list|again)\b/.test(m) && !/\bbook\b/.test(m) && m.length < 60) {
+    const r = session.lastRide;
+    return reply(session, sid,
+      `🚗 ${r.pickup} → ${r.destination}:\n` + r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
+      `\n\nWhich would you like? (reply e.g. “book the Car”)`);
+  }
+  // — best courier price —
+  if (session.lastQuote && /\bbest (price|offer|quote|rate)\b/.test(m)) {
+    const q = session.lastQuote;
+    return reply(session, sid, `Best price is **${q.provider} at ${fmtNgn(q.amount)}** (~${q.eta_minutes} min), for ${q.pickup} → ${q.destination}. Shall I book it?`);
+  }
+  // — cheapest/first stay in the current list —
+  if (session.stayResults && /\b(cheapest|lowest|cheap|first|top)\b/.test(m)) {
+    const sorted = [...session.stayResults].sort((a, b) => a.price_per_night - b.price_per_night);
+    const s = sorted[0];
+    return reply(session, sid, `The cheapest option is **${s.name} at ${fmtNgn(s.price_per_night)}/night** (⭐ ${s.rating}). Reply with its number to book.`);
+  }
+  // — what did I just do? —
+  if (session.lastAction && /\bwhat did i (just |last )?(do|buy|order|book|pay|send|request)\b/.test(m)) {
+    const a = session.lastAction;
+    return reply(session, sid, `Your last action was **${a.name.replace(/_/g, " ")}**: ${String(a.message || "").slice(0, 160)}`);
+  }
+  // — track my last order —
+  if (/\b(track|status|check|where)\b.*\b(last|latest|most recent) order\b|\blast order\b.*\b(track|status|check)\b/.test(m)) {
+    if (!session.lastOrderRef) {
+      return reply(session, sid, "I don't have a bookable order to track yet — order IDs come from send/ride/stay/chop/shop/work bookings. If you have an ID, send it to me and I'll track it.");
+    }
+    const ref = session.lastOrderRef;
+    return (async () => {
+      const r = await executeTool("order_status", { order_ref: ref }, session.userId, uid("run"));
+      if (r.error) return reply(session, sid, friendlyError(r));
+      return reply(session, sid, `📦 Your last order ${r.order_id} [${r.vertical}] is **${r.status.replace(/_/g, " ")}**.\nLatest: ${r.last_event.note}`);
+    })();
+  }
+  // — "do the same again" reuses the last executed action —
+  if (session.lastAction && /^(again|yes again|same again|same as (last time|before)?|same thing|do (it|that|the same) again|repeat|one more time|another one|one more)\b/.test(m)) {
+    const la = session.lastAction;
+    if (needsConfirm(la.name)) return askConfirm(session, sid, { name: la.name, args: { ...la.args }, missing: [] });
+    return (async () => {
+      const r = await executeTool(la.name, { ...la.args }, session.userId, uid("run"));
+      if (r.error) return reply(session, sid, friendlyError(r));
+      storeLastAction(session, la.name, la.args, r);
+      return reply(session, sid, `✅ ${r.message}`);
+    })();
+  }
+  return null;
 }
 
 function handleQuickAction(session, sid, message) {
@@ -388,6 +527,8 @@ async function resumeConfirmed(session, sid) {
   if (pc.kind === "tool") {
     const r = await executeTool(pc.name, pc.args, session.userId, uid("run"));
     if (r.error) return reply(session, sid, friendlyError(r));
+    // remember this action so follow-ups ("again", "what did I just do?") work
+    storeLastAction(session, pc.name, pc.args, r);
     // capture as a preference signal once per session (never for payments)
     await maybeLearnPref(session, pc.name, pc.args);
     // episodic + vector memory of what was done

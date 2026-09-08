@@ -52,7 +52,7 @@ export function mockClassifyIntent(text) {
   const nights = (raw.match(/(\d{1,2})\s*(?:night|day)s?/i) || [])[1];
   const cityM = raw.match(/(abuja|lagos|ibadan|port harcourt|ph|kaduna|kano|owerri|enugu|benin city)/i);
   const city = cityM ? (cityM[1].toLowerCase() === "ph" ? "port harcourt" : cityM[1].toLowerCase()) : "";
-  const orderRef = (raw.match(/\b(ORD_?|BK_?|VT_?)[a-z0-9]+/i) || [])[0] || "";
+  const orderRef = (raw.match(/\b(ORD|BK|VT|TP)_?[A-Za-z0-9]{4,}\b/i) || [])[0] || "";
   const entities = {
     network: findNetwork(t) || "",
     phone: findPhone(t) || "",

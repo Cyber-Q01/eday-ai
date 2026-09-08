@@ -102,6 +102,7 @@ Intent list (JSON schema):
  "confidence": 0.0       // 0-1
 }
 Rules: Nigerian phones start 0 then 10 digits (080..., 090...). DisCos: ibedc, ikede, ekedc, aedc, bedc, eedc, phedc, kaduna. Networks: mtn, glo, airtel, 9mobile. Electricity requires meter_number (11 digits). If a payment amount is unclear or a required entity is missing set needs_clarification=true and add "missing": "<field>" into entities.
+The user can refer to EARLIER turns in the History ("same", "again", "that number", "the bike", "instead", "the other one") — when they do, carry entities over from the History/context and treat them as present; only set needs_clarification if the value genuinely cannot be recovered from context.
 Money mentions like "₦500", "500 naira", "N500", or a bare number in "pay 5000 electricity" -> amount_ngn=5000. "buy data" default network mtn.`;
   const out = await llmJson(system, `History: ${historyTail || "(none)"}\nUser: ${userText}`);
   return out;

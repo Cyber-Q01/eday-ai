@@ -42,3 +42,10 @@ test("mock: ride phrases classify ride", () => {
   assert.equal(r.entities.pickup, "ikeja");
   assert.equal(r.entities.destination, "lekki");
 });
+
+test("mock: plain word 'order' is never treated as an order ref", () => {
+  const r = mockClassifyIntent("track my last order");
+  assert.equal(r.entities.order_ref, "");
+  const r2 = mockClassifyIntent("status of ORD_29a5b08897");
+  assert.equal(r2.entities.order_ref.toLowerCase(), "ord_29a5b08897");
+});
