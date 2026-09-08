@@ -37,7 +37,7 @@ class MemoryStore {
       try { mkdirSync(dirname(this.file), { recursive: true }); writeFileSync(this.file, JSON.stringify(Object.fromEntries(this.data)), "utf8"); } catch { /* ignore */ }
     }
   }
-  async _sbFetch(path, opts) {
+  async _sbFetch(path, opts = {}) {
     const res = await fetch(`${sbUrl()}/${path}`, { ...opts, headers: { ...SB_HEADERS(), ...(opts.headers || {}) } });
     if (!res.ok) throw new Error(`supabase ${res.status}: ${(await res.text()).slice(0, 200)}`);
     // PostgREST returns 204 (RPC void) or 201 with an EMPTY body (return=minimal) —

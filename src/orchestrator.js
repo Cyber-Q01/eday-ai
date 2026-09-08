@@ -46,23 +46,54 @@ function friendlyError(e) {
 // ---------- intent resolution ----------
 async function resolveIntent(text, session) {
   if (isMock()) {
-    const m = mockClassifyIntent(text);
+    const m = normalizeIntent(mockClassifyIntent(text));
     audit.write({ kind: "intent", mode: "mock", user_id: session.userId, session: session.id, ...m, entities: summarizeEntities(m.entities) });
     return m;
   }
   try {
     const tail = session.history.slice(-4).map((h) => `${h.role}: ${String(h.content).slice(0, 200)}`).join("\n");
-    const m = await llmClassifyIntent(text, tail);
+    const m = normalizeIntent(await llmClassifyIntent(text, tail));
+    // LLMs often label concrete requests phrased as questions as "help"
+    // (e.g. "what do I need to give you to send a package to Ikeja?").
+    // If so, and the rule parser finds a REAL service signal, prefer it.
+    if (["help", "greeting", "offscope"].includes(m.intent)) {
+      const r = normalizeIntent(mockClassifyIntent(text));
+      const concrete = r && ["service_request", "track", "wallet", "support"].includes(r.intent);
+      const bareHelp = /^\s*(help|menu|what can you do|what do you do)\s*$/i.test(text);
+      if (concrete && !bareHelp) {
+        log(`intent '${m.intent}' refined → ${r.vertical}/${r.subtype} (text has concrete service signal)`);
+        audit.write({ kind: "intent", mode: "refined", user_id: session.userId, session: session.id, ...r, entities: summarizeEntities(r.entities) });
+        return r;
+      }
+    }
     audit.write({ kind: "intent", mode: "openai", model: m._model, user_id: session.userId, session: session.id,
       intent: m.intent, vertical: m.vertical, subtype: m.subtype, confidence: m.confidence, multi: m.multi,
       entities: summarizeEntities(m.entities), needs_clarification: m.needs_clarification });
     return m;
   } catch (e) {
     log("llm intent failed, falling back to mock:", e.message);
-    const m = mockClassifyIntent(text);
+    const m = normalizeIntent(mockClassifyIntent(text));
     audit.write({ kind: "intent", mode: "fallback", user_id: session.userId, session: session.id, ...m, entities: summarizeEntities(m.entities) });
     return m;
   }
+}
+
+// ---------- intent normalization ----------
+// LLMs sometimes return vertical "none"/null while still giving a real subtype
+// (e.g. subtype:"airtime", vertical:"none"). Repair the vertical from the subtype
+// so the intent → tool mapper never dead-ends on schema drift.
+function normalizeIntent(m) {
+  const i = m || {};
+  if (!i.vertical || i.vertical === "none") {
+    const map = {
+      airtime: "bills", data: "bills", electricity: "bills",
+      send_package: "send", send_track: "send", ride_now: "ride",
+      stay_book: "stay", travel: "stay", chop_order: "chop",
+      shop_order: "shop", work_request: "work",
+    };
+    if (map[i.subtype]) i.vertical = map[i.subtype];
+  }
+  return i;
 }
 
 // ---------- intent → concrete tool call ----------
@@ -75,11 +106,13 @@ function mapIntentToCall(intent) {
     if (sub === "electricity") return { name: "electricity_purchase", args: { disco: e.disco, meter_number: e.meter_number, amount_ngn: e.amount_ngn }, missing: missingOf(e, ["meter_number", "amount_ngn"]) };
   }
   if (intent.vertical === "send" && sub === "send_package") {
-    if (e.destination && !e.pickup && e.description) return { name: "send_quote", args: { pickup: inferPickup(e.description) || "My location (Ikeja, Lagos)", destination: e.destination, package_type: e.package_type }, missing: [] };
-    return { name: "send_quote", args: { pickup: e.pickup, destination: e.destination, package_type: e.package_type }, missing: missingOf(e, ["destination"]) };
+    const args = { pickup: e.pickup || inferPickup(e.description || "") || "", destination: e.destination || "", package_type: e.package_type };
+    return { name: "send_quote", args, missing: missingOf(args, ["pickup", "destination"]) };
   }
-  if (intent.vertical === "ride" && sub === "ride_now")
-    return { name: "ride_quote", args: { pickup: e.pickup || inferPickup(e.description), destination: e.destination, ride_type: null }, missing: missingOf(e, ["destination"]) };
+  if (intent.vertical === "ride" && sub === "ride_now") {
+    const args = { pickup: e.pickup || inferPickup(e.description || ""), destination: e.destination || "", ride_type: null };
+    return { name: "ride_quote", args, missing: missingOf(args, ["pickup", "destination"]) };
+  }
   if (intent.vertical === "stay" && (sub === "stay_book" || sub === "travel"))
     return { name: "stay_search", args: { city: e.city || guessCity(e.description), nights: e.nights || 1 }, missing: [] };
   // CHOP — food delivery
@@ -108,7 +141,7 @@ function missingOf(e, keys) {
 }
 function inferPickup(desc = "") {
   const m = desc.match(/from\s+([A-Za-z0-9 ,-]{3,40}?)(?:\s+to|\s*$)/i);
-  return m ? m[1] : "My location (Ikeja, Lagos)";
+  return m ? m[1].trim() : "";
 }
 function extractRef(desc = "") {
   const m = desc.match(/\b(ORD|BK|VT|EC)_?[A-Za-z0-9]+\b/i);
@@ -182,6 +215,12 @@ export async function handleMessage({ session_id, user_id, channel, message, con
   //     pick a stay result number, choose a ride type
   const qa = handleQuickAction(session, sid, message);
   if (qa) return qa;
+
+  // bare acknowledgements with nothing pending should not fall through to "help"
+  if (/^\s*(yes|yeah|yep|ok|okay|sure|no|nope|fine)\s*[.!]*\s*$/i.test(message)) {
+    session.history.pop();
+    return reply(session, sid, "There's nothing waiting for your confirmation right now. What would you like to do? Try “help” to see everything EDAY can do.");
+  }
 
   // 2) intent
   const intent = await resolveIntent(message, session);
@@ -293,16 +332,16 @@ function handleQuickAction(session, sid, message) {
       missing: [],
     });
   }
-  // Pick a stay result by number
-  if (session.stayResults && /^(\d{1,2})$/.test(m)) {
-    const idx = parseInt(m, 10) - 1;
+  // Pick a stay result by number (or plain "yes"/"ok" = pick the first)
+  if (session.stayResults && (/^(\d{1,2})$/.test(m) || /\b(yes|yeah|yep|ok|okay|go ahead|proceed|book)\b/.test(m))) {
+    const idx = (/^(\d{1,2})$/.test(m) ? parseInt(m, 10) : 1) - 1;
     const s = session.stayResults[idx];
     if (!s) return reply(session, sid, `Pick a number between 1 and ${session.stayResults.length}.`);
     session.stayResults = null;
     return askConfirm(session, sid, { name: "stay_book", args: { property_id: s.id, nights: s.nights, property_name: s.name, amount: s.total_ngn || s.price_per_night * s.nights }, missing: [] });
   }
-  // Book a ride of a type shown in the last quote
-  if (session.lastRide && /\bbook\b/.test(m)) {
+  // Book a ride of a type shown in the last quote ("yes"/"ok" = Car, the default)
+  if (session.lastRide && /\b(book|yes|yeah|yep|ok|okay|go ahead|proceed)\b/.test(m) && !/\bno\b/.test(m)) {
     const type = (m.match(/\b(bike|car|premium)\b/) || [])[1] || "car";
     const r = session.lastRide;
     session.lastRide = null;
