@@ -65,7 +65,7 @@ const server = createServer(async (req, res) => {
     return ok(res, {
       status: "ok",
       service: "eday-ai",
-      version: "0.1.8",
+      version: "0.1.9",
       llm_provider: effectiveLlmMode(),
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),
@@ -133,5 +133,6 @@ const server = createServer(async (req, res) => {
 server.listen(config.port, "0.0.0.0", () => {
   log(`EDAY AI orchestration listening on http://0.0.0.0:${config.port}`);
   log(`LLM mode: ${effectiveLlmMode()}${isMock() ? " (mock — set OPENAI_API_KEY for real intents)" : " — model " + config.llmModel}`);
+  log(`WhatsApp: ${whatsappReady() ? "ready (token+phone id set)" : "NOT ready (need WHATSAPP_TOKEN + WHATSAPP_PHONE_ID)"} · webhook verify-token ${config.whatsappVerifyToken ? "set" : "MISSING"} · app-secret ${config.whatsappAppSecret ? `set (${config.whatsappAppSecret.length} chars)` : "MISSING (signature check skipped)"} · dry-run ${config.whatsappDryRun ? "ON" : "off"}`);
   log(`Open the playground: http://localhost:${config.port}/`);
 });

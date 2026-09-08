@@ -32,12 +32,22 @@ export function verifyHandshake(url) {
 
 /** Optional X-Hub-Signature-256 check using the app secret (raw body!). */
 export function signatureOk(rawBody, header) {
-  if (!config.whatsappAppSecret) return true; // not configured → skip (log once in route)
-  if (!header) return false;
+  if (!config.whatsappAppSecret) {
+    log("[whatsapp] WARNING: no WHATSAPP_APP_SECRET set — skipping signature check (fine for testing; add it for production)");
+    return true; // not configured → skip
+  }
+  if (!header) {
+    log("[whatsapp] signature check failed — Meta sent no X-Hub-Signature-256 header");
+    return false;
+  }
   const expected = "sha256=" + createHmac("sha256", config.whatsappAppSecret).update(rawBody).digest("hex");
-  const a = Buffer.from(String(header));
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+  const got = String(header);
+  const ok = got.length === expected.length && timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+  if (!ok) {
+    // diagnostic only — never log full signatures or the secret
+    log(`[whatsapp] signature mismatch → computed sha256=…${expected.slice(-8)} vs received …${got.slice(-8)} (len ${got.length}/${expected.length}, app-secret len ${config.whatsappAppSecret.length})`);
+  }
+  return ok;
 }
 
 /** Default sender: Graph API messages endpoint. */

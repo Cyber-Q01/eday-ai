@@ -56,11 +56,11 @@ export const config = {
   supabaseServiceKey: env("SUPABASE_SERVICE_ROLE_KEY", ""), // server-only, never client
   storeBackend: env("STORE_BACKEND", "auto"),               // auto | memory | file | supabase
   // WhatsApp Cloud API (Meta) — see README "Connect WhatsApp"
-  whatsappVerifyToken: env("WHATSAPP_VERIFY_TOKEN", ""),    // any secret string YOU choose (webhook handshake)
-  whatsappToken: env("WHATSAPP_TOKEN", ""),                 // system-user (or temp) access token with whatsapp_business_messaging
-  whatsappPhoneId: env("WHATSAPP_PHONE_ID", ""),            // phone-number-id from Meta dashboard (API Setup)
-  whatsappAppSecret: env("WHATSAPP_APP_SECRET", ""),        // optional — enables X-Hub-Signature-256 verification
-  whatsappGraphVersion: env("WHATSAPP_GRAPH_VERSION", "v22.0"),
+  whatsappVerifyToken: env("WHATSAPP_VERIFY_TOKEN", "").trim(),  // any secret string YOU choose (webhook handshake)
+  whatsappToken: env("WHATSAPP_TOKEN", "").trim(),               // system-user (or temp) access token with whatsapp_business_messaging
+  whatsappPhoneId: env("WHATSAPP_PHONE_ID", "").trim(),          // phone-number-id from Meta dashboard (API Setup)
+  whatsappAppSecret: env("WHATSAPP_APP_SECRET", "").trim(),      // optional — enables X-Hub-Signature-256 verification
+  whatsappGraphVersion: env("WHATSAPP_GRAPH_VERSION", "v22.0").trim(),
   whatsappDryRun: env("WHATSAPP_DRY_RUN", "false") === "true", // log instead of calling Graph (webhook testing w/o token)
 };
 
