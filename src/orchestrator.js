@@ -70,7 +70,36 @@ async function sessionContext(session) {
   return parts.join("\n\n");
 }
 
+const BARE_GREET = /^(hi|hii+|hello|hey|yo|hiya|good\s?(morning|afternoon|evening)|morning|evening|(hi|hello|hey)\s?there)\s*[!.?]*$/i;
+const BARE_HELP = /^(help|menu|what can you do|what do you do|what can i do|options|commands)\s*[!.?]*$/i;
+const BARE_THANKS = /^(thanks|thank you|thank u|thx|cheers|appreciated|ty|thanks (a lot|so much|very much)|thank you (so much|very much|a lot))\s*[!.?]*$/i;
+const BARE_BYE = /^(bye|goodbye|see you|later|good night|gn)\s*[!.?]*$/i;
+
 async function resolveIntent(text, session) {
+  // FAST PATH (runs in mock AND llm mode): trivial messages are answered from
+  // rules — zero LLM calls, zero rate-limit risk, instant replies ("help" must
+  // ALWAYS work, even mid-quota-storm). It also acts as the classifier fallback.
+  const t = String(text || "").trim();
+  if (BARE_HELP.test(t)) {
+    const m = { intent: "help", vertical: "none", subtype: "none", entities: {}, multi: [], confidence: 1, needs_clarification: false };
+    audit.write({ kind: "intent", mode: "fast", user_id: session.userId, session: session.id, ...m });
+    return m;
+  }
+  if (BARE_GREET.test(t)) {
+    const m = { intent: "greeting", vertical: "none", subtype: "none", entities: {}, multi: [], confidence: 1, needs_clarification: false };
+    audit.write({ kind: "intent", mode: "fast", user_id: session.userId, session: session.id, ...m });
+    return m;
+  }
+  if (BARE_THANKS.test(t)) {
+    const m = { intent: "chatter", vertical: "none", subtype: "thanks", entities: {}, multi: [], confidence: 1, needs_clarification: false };
+    audit.write({ kind: "intent", mode: "fast", user_id: session.userId, session: session.id, ...m });
+    return m;
+  }
+  if (BARE_BYE.test(t)) {
+    const m = { intent: "chatter", vertical: "none", subtype: "bye", entities: {}, multi: [], confidence: 1, needs_clarification: false };
+    audit.write({ kind: "intent", mode: "fast", user_id: session.userId, session: session.id, ...m });
+    return m;
+  }
   if (isMock()) {
     const m = normalizeIntent(mockClassifyIntent(text));
     audit.write({ kind: "intent", mode: "mock", user_id: session.userId, session: session.id, ...m, entities: summarizeEntities(m.entities) });
@@ -236,6 +265,14 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     // mid-confirm edits: "make it 1000", "change the phone to 0805…", "mtn instead"
     const edited = tryEditPending(session, sid, message);
     if (edited) return edited;
+    // explicit "help"/"menu" while a confirmation is pending → show the menu
+    // instead of trapping the user in the confirm loop (the confirm stays
+    // pending, so a later "yes" still resumes it)
+    if (BARE_HELP.test(message.trim())) {
+      session.history.pop();
+      const t = await executeTool("help_menu", {}, session.userId, uid("run"));
+      return reply(session, sid, t.message, helpActions());
+    }
     // ambiguous while waiting
     session.history.pop(); // don't store this as regular user turn yet
     return reply(session, sid, `Please reply **Yes** to confirm or **No** to cancel.\n\n${session.pendingConfirm.text}`);
@@ -264,6 +301,12 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     const mem = await memory.recall(session.userId);
     const hi = mem.prefs?.length ? `Welcome back! 👋 You have ${mem.prefs.length} saved ${mem.prefs.length === 1 ? "preference" : "preferences"}.` : "Hello! 👋";
     return reply(session, sid, `${hi} I'm the EDAY assistant — I can buy airtime & data, pay electricity bills, send packages, book rides and stays, and more. Try “help” to see what I can do.`, helpActions());
+  }
+
+  if (intent.intent === "chatter") {
+    if (intent.subtype === "bye") return reply(session, sid, "👋 Bye! Ping me anytime you need EDAY.");
+    if (intent.subtype === "thanks") return reply(session, sid, "You're welcome! 😊 Anything else I can help you with?");
+    return reply(session, sid, "😊 Glad to help! What would you like to do?");
   }
 
   if (intent.intent === "offscope") {

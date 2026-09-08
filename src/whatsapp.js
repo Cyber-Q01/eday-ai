@@ -12,6 +12,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { log } from "./util.js";
 import { handleMessage } from "./orchestrator.js";
+import { audit } from "./audit.js";
 
 export function whatsappEnabled() {
   return Boolean(config.whatsappVerifyToken);
@@ -70,18 +71,44 @@ async function graphSender(to, text) {
   return res.json();
 }
 
-/** Send one text reply (chunked if > 4000 chars — WhatsApp limit). */
+/** Send one text reply (chunked if > 4000 chars — WhatsApp limit).
+ *  Retries transient Meta failures (429/5xx/network) up to 3× with backoff.
+ *  WhatsApp doesn't render markdown "**bold**" — it uses single asterisks,
+ *  so reply text is lightly converted before sending. */
 export async function sendWhatsApp(to, text, sender = graphSender) {
-  const body = String(text || "").trim();
+  let body = String(text || "").trim();
   if (!body) return { skipped: true };
+  // convert EDAY's markdown-ish formatting to WhatsApp's
+  body = body
+    .replace(/\*\*([^*]+)\*\*/g, "*$1*")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\n{3,}/g, "\n\n");
   const chunks = [];
   for (let i = 0; i < body.length; i += 3900) chunks.push(body.slice(i, i + 3900));
   if (config.whatsappDryRun) {
     log(`[whatsapp] DRY-RUN to ${to}:`, chunks[0].slice(0, 120) + (chunks.length > 1 ? " …" : ""));
     return { dry_run: true, chunks: chunks.length };
   }
-  for (const c of chunks) await sender(to, c);
-  return { sent: true, chunks: chunks.length };
+  const transient = (e) => /HTTP (429|5\d\d)/.test(e.message || "") || e.name === "TypeError" || e.name === "AbortError";
+  let failures = 0;
+  for (const c of chunks) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await sender(to, c);
+        break;
+      } catch (e) {
+        failures++;
+        if (attempt >= 2 || !transient(e)) {
+          log(`[whatsapp] SEND FAILED to ${to}:`, e.message);
+          throw e;
+        }
+        const waitMs = 600 * (attempt + 1);
+        log(`[whatsapp] send retry ${attempt + 1} in ${waitMs}ms (${e.message.slice(0, 90)})`);
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+    }
+  }
+  return { sent: true, chunks: chunks.length, failures };
 }
 
 /** Extract WhatsApp messages from a Cloud API webhook payload. */
@@ -124,12 +151,25 @@ export async function handleWhatsappPayload(body, opts = {}) {
     const userId = `wa_${m.from}`;
     const sid = `wa_${m.from}`;
     const run = async () => {
+      // WhatsApp's Cloud API has NO typing indicator — so if an answer takes
+      // more than ~2s, send an instant "I'm on it" ack to keep the chat feeling
+      // alive (WHATSAPP_ACK=false to disable).
+      let ackTimer = null;
+      if (!config.whatsappDryRun && config.whatsappAck) {
+        ackTimer = setTimeout(() => {
+          sendWhatsApp(m.from, config.whatsappAckText, sender).catch(() => {});
+        }, 2000);
+      }
       try {
         const out = await handleMessage({ session_id: sid, user_id: userId, channel: "whatsapp", message: m.text });
-        await sendWhatsApp(m.from, out.reply, sender);
-        return { from: m.from, reply: String(out.reply).slice(0, 80) };
+        if (ackTimer) clearTimeout(ackTimer);
+        const sent = await sendWhatsApp(m.from, out.reply, sender);
+        audit.write({ kind: "wa_out", user_id: userId, session: sid, to: m.from, ok: !!sent.sent, ...(sent.failures ? { failures: sent.failures } : {}) });
+        return { from: m.from, reply: String(out.reply).slice(0, 80), sent: !!sent.sent };
       } catch (e) {
+        if (ackTimer) clearTimeout(ackTimer);
         log("[whatsapp] processing failed:", e.message);
+        audit.write({ kind: "wa_out", user_id: userId, session: sid, to: m.from, ok: false, error: String(e.message).slice(0, 200) });
         try { await sendWhatsApp(m.from, "Sorry, something went wrong on my side. Please try again in a moment.", sender); } catch { /* swallow */ }
         return { from: m.from, error: e.message };
       }

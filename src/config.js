@@ -62,6 +62,11 @@ export const config = {
   whatsappAppSecret: env("WHATSAPP_APP_SECRET", "").trim(),      // optional — enables X-Hub-Signature-256 verification
   whatsappGraphVersion: env("WHATSAPP_GRAPH_VERSION", "v22.0").trim(),
   whatsappDryRun: env("WHATSAPP_DRY_RUN", "false") === "true", // log instead of calling Graph (webhook testing w/o token)
+  whatsappAck: env("WHATSAPP_ACK", "true") === "true",          // send an instant "one moment" if processing > ~2s (no typing indicator in Cloud API)
+  whatsappAckText: env("WHATSAPP_ACK_TEXT", "⏳ One moment — EDAY is on it…"),
+  // keep-awake heartbeat (Railway sleeps services after ~10 min of NO outbound traffic)
+  keepaliveUrl: env("KEEPALIVE_URL", "").trim(),          // explicit heartbeat target; "off" disables
+  keepaliveIntervalMin: parseInt(env("KEEPALIVE_INTERVAL_MIN", "4"), 10) || 4,
 };
 
 // litellm = self-hosted LiteLLM proxy (free, MIT). Use OPENAI_API_KEY = proxy master

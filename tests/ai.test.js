@@ -202,3 +202,25 @@ test("context: track-my-last-order with no order yet answers helpfully (no hallu
   const r = await handleMessage({ ...s, message: "track my last order" });
   assert.match(r.reply, /don't have a bookable order|order IDs come from/i);
 });
+
+test("chatter: thanks gets a friendly reply (fast path, no LLM)", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "thanks a lot" });
+  assert.match(r.reply, /welcome|glad/i);
+});
+
+test("chatter: bye gets a goodbye", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "bye" });
+  assert.match(r.reply, /Bye|👋/i);
+});
+
+test("help is answered instantly even when the LLM is down", async () => {
+  const s = fresh();
+  const r = await handleMessage({ ...s, message: "help" });
+  assert.match(r.reply, /I can help you with/i);
+  // and again after a complex turn (session memory intact)
+  await handleMessage({ ...s, message: "buy 500 naira mtn airtime for 08031234567" });
+  const r2 = await handleMessage({ ...s, message: "help" });
+  assert.match(r2.reply, /I can help you with/i);
+});

@@ -76,3 +76,27 @@ test("signature check: valid HMAC passes, tampered body fails (when app secret s
   assert.equal(signatureOk(raw + "tampered", sig), false);
   assert.equal(signatureOk(raw, null), false);
 });
+
+test("sendWhatsApp: retries transient failures then succeeds", async () => {
+  const config2 = { ...config };
+  let calls = 0;
+  const flaky = async (to, text) => {
+    calls++;
+    if (calls === 1) throw new Error("whatsapp send HTTP 429: rate limited");
+    if (calls === 2) throw new Error("whatsapp send HTTP 500: oops");
+    return { ok: true };
+  };
+  config.whatsappDryRun = false;
+  const r = await sendWhatsApp("2348000000000", "retry me", flaky);
+  assert.equal(r.sent, true);
+  assert.equal(calls, 3);
+});
+
+test("sendWhatsApp: converts **bold** to *bold* (WhatsApp markdown)", async () => {
+  const sent = [];
+  const fake = async (to, text) => { sent.push(text); };
+  config.whatsappDryRun = false;
+  await sendWhatsApp("2348000000000", "Buy **₦500** airtime for *mtn*?", fake);
+  assert.match(sent[0], /Buy \*₦500\* airtime/);
+  assert.ok(!sent[0].includes("**"));
+});

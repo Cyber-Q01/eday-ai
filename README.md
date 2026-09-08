@@ -42,7 +42,7 @@ The service ships a WhatsApp bridge: a real WhatsApp number can chat with EDAY (
 6. Add your phone: **API Setup → To:** add your WhatsApp number (or message the business number once from your phone).
 
 ### EDAY side (env vars)
-`WHATSAPP_VERIFY_TOKEN` (required) · `WHATSAPP_TOKEN` · `WHATSAPP_PHONE_ID` · `WHATSAPP_APP_SECRET` (optional) · `WHATSAPP_DRY_RUN` (testing only). Each sender maps to user `wa_<number>` with a sticky session — memory and confirmations persist per phone. Message bursts are processed in order.
+`WHATSAPP_VERIFY_TOKEN` (required) · `WHATSAPP_TOKEN` · `WHATSAPP_PHONE_ID` · `WHATSAPP_APP_SECRET` (optional) · `WHATSAPP_DRY_RUN` (testing only) · `WHATSAPP_ACK` (default true — sends an instant "one moment" text when a reply takes >2s; the Cloud API has no typing indicator, so this is EDAY's stand-in) · `WHATSAPP_ACK_TEXT`. Each sender maps to user `wa_<number>` with a sticky session — memory and confirmations persist per phone. Message bursts are processed in order.
 
 Check it's live: `GET /v1/meta` → `whatsapp_connected: true`. No API key needed on the webhook itself (Meta cannot add headers).
 
@@ -114,6 +114,26 @@ What vector memory gives you (once connected):
 ```bash
 docker build -t eday-ai . && docker run -p 3000:3000 -e LLM_MODE=mock eday-ai
 ```
+
+## Keeping the app awake (Railway & co.)
+
+Railway's app-sleeping ("Serverless") puts a service to sleep after **~10 minutes with no
+outbound traffic** — and inbound pings (webhooks, external uptime monitors like
+cron-job.org/UptimeRobot) do **not** keep it awake; they only wake a service after it has
+already slept, and it sleeps again ~10 min later. The fix is outbound activity started
+*inside* the service: EDAY ships a built-in keep-awake heartbeat that pings its own public
+URL every few minutes.
+
+- Enabled automatically when a public URL is known: `RAILWAY_PUBLIC_DOMAIN` (or
+  `RAILWAY_STATIC_URL`) is set by Railway — no env vars needed.
+- Override the target with `KEEPALIVE_URL=https://…` (any URL; e.g. point it at the app
+  itself). Set `KEEPALIVE_URL=off` to disable.
+- Interval: `KEEPALIVE_INTERVAL_MIN` (default 4 — must stay under the ~10 min sleep
+  window; minimum 1).
+- Verify: boot log prints `[keepalive] heartbeat ON — outbound ping to … every 4 min`.
+
+If you'd rather not pay the tiny heartbeat traffic, the alternative is Railway service
+settings → **Serverless → disable** (keeps the container running 24/7 on paid plans).
 
 ## EDAY service coverage (all verticals in ONE assistant)
 

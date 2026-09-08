@@ -1,6 +1,6 @@
 {
   "name": "eday-ai",
-  "version": "0.1.9",
+  "version": "0.2.1",
   "description": "EDAY AI Orchestration Layer \u2014 chat API, intent engine, tool layer, confirmation gates, memory & audit. Deployable to Render.",
   "type": "module",
   "main": "src/server.js",

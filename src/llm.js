@@ -9,18 +9,24 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
   const ep = llmEndpoint();
   if (!ep) throw new Error("LLM not configured (mock mode)");
   const started = Date.now();
+  // Hard budget: never burn more than ~8s total on LLM attempts. Free-tier
+  // rate-limit storms (429) must degrade to the rule fallback FAST, not stall
+  // a WhatsApp user for a minute.
+  const BUDGET_MS = 8000;
   const models = Array.from(new Set([ep.model, ...(ep.fallbackModels || [])]));
   const base = { messages, temperature };
   if (useJson) base.response_format = { type: "json_object" };
 
-  // One HTTP attempt. Hard 35s timeout so a stalled provider can never hang a
+  const overBudget = () => Date.now() - started > BUDGET_MS;
+
+  // One HTTP attempt. Hard 20s timeout so a stalled provider can never hang a
   // conversation indefinitely — it becomes a retryable failure instead.
   const callOnce = async (model, withJson) => {
     const res = await fetch(`${ep.base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${ep.key}` },
       body: JSON.stringify({ ...base, model, ...(withJson ? {} : { response_format: undefined }) }),
-      signal: AbortSignal.timeout(35_000),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
@@ -36,6 +42,10 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
   let jsonMode = useJson;
   outer: for (const model of models) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (overBudget()) {
+        log(`llm: ${BUDGET_MS}ms budget exceeded — giving up (last: ${(lastErr && (lastErr.status || lastErr.name)) || "?"})`);
+        break outer;
+      }
       try {
         data = await callOnce(model, jsonMode);
         break outer;
@@ -50,8 +60,8 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
           continue;
         }
         if (!retryable) break outer; // hard error (401, bad request...) — surface it
-        if (attempt === 0) {
-          const waitMs = 1000 + Math.round(Math.random() * 800);
+        if (attempt === 0 && !overBudget()) {
+          const waitMs = 400 + Math.round(Math.random() * 300);
           log(`llm: ${e.status || e.name} (${model}) — retry in ${waitMs}ms`);
           await new Promise((r) => setTimeout(r, waitMs));
         } else if (models.length > 1 && model !== models[models.length - 1]) {

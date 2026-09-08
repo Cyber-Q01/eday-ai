@@ -8,6 +8,7 @@ import { audit } from "./audit.js";
 import { playgroundHtml } from "./playground.js";
 import { isMock, effectiveLlmMode, llmEndpoint, resolveStoreBackend } from "./config.js";
 import { whatsappEnabled, verifyHandshake, signatureOk, handleWhatsappPayload, whatsappReady } from "./whatsapp.js";
+import { startKeepalive, resolveKeepaliveTarget } from "./keepalive.js";
 
 function authorize(req) {
   if (!config.apiKey) return true;
@@ -65,7 +66,7 @@ const server = createServer(async (req, res) => {
     return ok(res, {
       status: "ok",
       service: "eday-ai",
-      version: "0.1.9",
+      version: "0.2.1",
       llm_provider: effectiveLlmMode(),
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),
@@ -135,4 +136,7 @@ server.listen(config.port, "0.0.0.0", () => {
   log(`LLM mode: ${effectiveLlmMode()}${isMock() ? " (mock — set OPENAI_API_KEY for real intents)" : " — model " + config.llmModel}`);
   log(`WhatsApp: ${whatsappReady() ? "ready (token+phone id set)" : "NOT ready (need WHATSAPP_TOKEN + WHATSAPP_PHONE_ID)"} · webhook verify-token ${config.whatsappVerifyToken ? "set" : "MISSING"} · app-secret ${config.whatsappAppSecret ? `set (${config.whatsappAppSecret.length} chars)` : "MISSING (signature check skipped)"} · dry-run ${config.whatsappDryRun ? "ON" : "off"}`);
   log(`Open the playground: http://localhost:${config.port}/`);
+  // keep-awake heartbeat: Railway puts services to sleep after ~10 min of no
+  // OUTBOUND traffic, so the app pings its own public URL on a schedule.
+  startKeepalive({ target: resolveKeepaliveTarget(process.env), intervalMin: config.keepaliveIntervalMin });
 });
