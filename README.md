@@ -22,6 +22,30 @@ Open **http://localhost:3000/** — a chat playground. Try:
 
 Test data: meters `41234567890` (IBEDC), `51234567890` (EKEDC), `61234567890` (IKEDC). Every new user gets a ₦50,000 mock wallet. Payments **always ask for confirmation** unless `SKIP_CONFIRM=true` (testing only).
 
+## Connect WhatsApp (Meta Cloud API) — free
+
+The service ships a WhatsApp bridge: a real WhatsApp number can chat with EDAY (airtime, electricity, send, ride, stay, chop, shop, work, wallet — same brain, confirm-gated payments). Endpoints:
+
+- `GET /webhook/whatsapp` — Meta verification handshake
+- `POST /webhook/whatsapp` — inbound messages → reply (user-initiated 24 h window; no templates needed for testing)
+
+### Meta side (once, ~10 min, free)
+1. Go to [developers.facebook.com](https://developers.facebook.com) → **My Apps → Create App** → type **Business** → pick the EDAY Business portfolio (create one if asked) → add the **WhatsApp** product.
+2. In **WhatsApp → API Setup** you get: a **test phone number**, a **Phone number ID**, a **Temporary access token** (24 h — use a **System user** token for production: Business settings → System users → add user → assign your app → *whatsapp_business_messaging* permission → generate token).
+3. In **WhatsApp → Configuration → Webhook → Edit**, fill:
+   | Field | Value |
+   |---|---|
+   | **Callback URL** | `https://<your-service>.onrender.com/webhook/whatsapp` (Railway/Render URL + path) |
+   | **Verify token** | any secret string you choose (must equal env `WHATSAPP_VERIFY_TOKEN`) |
+4. Click **Verify and save** → Meta calls the GET endpoint and gets your challenge back.
+5. On the same page click **Manage → Subscribe** to the **messages** field.
+6. Add your phone: **API Setup → To:** add your WhatsApp number (or message the business number once from your phone).
+
+### EDAY side (env vars)
+`WHATSAPP_VERIFY_TOKEN` (required) · `WHATSAPP_TOKEN` · `WHATSAPP_PHONE_ID` · `WHATSAPP_APP_SECRET` (optional) · `WHATSAPP_DRY_RUN` (testing only). Each sender maps to user `wa_<number>` with a sticky session — memory and confirmations persist per phone. Message bursts are processed in order.
+
+Check it's live: `GET /v1/meta` → `whatsapp_connected: true`. No API key needed on the webhook itself (Meta cannot add headers).
+
 ## API
 
 | Endpoint | Purpose |

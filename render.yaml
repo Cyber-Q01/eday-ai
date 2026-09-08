@@ -39,6 +39,16 @@ services:
         value: "*"
       - key: API_KEY
         sync: false        # optional: require `Authorization: Bearer <API_KEY>` on /v1/*
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false        # WhatsApp webhook verify token — any secret string you choose
+      - key: WHATSAPP_TOKEN
+        sync: false        # Meta system-user (or temp) access token
+      - key: WHATSAPP_PHONE_ID
+        sync: false        # Meta dashboard → WhatsApp → API Setup → Phone number ID
+      - key: WHATSAPP_APP_SECRET
+        sync: false        # optional — enables webhook signature verification
+      - key: WHATSAPP_DRY_RUN
+        value: "false"     # true = log replies instead of sending (testing only)
       - key: MOCK_WALLET_BALANCE
         value: "50000"
 

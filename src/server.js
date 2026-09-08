@@ -7,6 +7,7 @@ import { memory } from "./memory.js";
 import { audit } from "./audit.js";
 import { playgroundHtml } from "./playground.js";
 import { isMock, effectiveLlmMode, llmEndpoint, resolveStoreBackend } from "./config.js";
+import { whatsappEnabled, verifyHandshake, signatureOk, handleWhatsappPayload, whatsappReady } from "./whatsapp.js";
 
 function authorize(req) {
   if (!config.apiKey) return true;
@@ -20,6 +21,38 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "OPTIONS") { sendJson(res, 204, {}); return; }
 
+  // ---- WhatsApp Cloud API webhook (Meta calls this; NO API key needed) ----
+  if (path === "/webhook/whatsapp") {
+    if (req.method === "GET") {
+      // Meta verification handshake
+      if (!whatsappEnabled()) return err(res, 404, "NOT_CONFIGURED", "WHATSAPP_VERIFY_TOKEN not set on the server.");
+      const challenge = verifyHandshake(url);
+      if (challenge === null) return err(res, 403, "VERIFY_FAILED", "Verify token mismatch.");
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(challenge);
+      return;
+    }
+    if (req.method === "POST") {
+      if (!whatsappEnabled()) return err(res, 404, "NOT_CONFIGURED", "WHATSAPP_VERIFY_TOKEN not set on the server.");
+      // read raw body (needed for signature check), then parse
+      const raw = await new Promise((resolve, reject) => {
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        req.on("error", reject);
+      });
+      if (!signatureOk(raw, req.headers["x-hub-signature-256"])) {
+        log("[whatsapp] signature check failed — dropping webhook");
+        return err(res, 403, "BAD_SIGNATURE", "Signature mismatch.");
+      }
+      let body = {};
+      try { body = raw ? JSON.parse(raw) : {}; } catch { /* malformed */ }
+      // process without blocking the response too long
+      handleWhatsappPayload(body).catch((e) => log("[whatsapp] webhook error:", e.message));
+      return ok(res, { received: true }); // ack fast (Meta retries on non-200)
+    }
+  }
+
   if (req.method === "GET" && path === "/") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(playgroundHtml());
@@ -32,7 +65,7 @@ const server = createServer(async (req, res) => {
     return ok(res, {
       status: "ok",
       service: "eday-ai",
-      version: "0.1.7",
+      version: "0.1.8",
       llm_provider: effectiveLlmMode(),
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),
@@ -86,6 +119,8 @@ const server = createServer(async (req, res) => {
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),
       supabase_connected: Boolean(config.supabaseUrl && config.supabaseServiceKey),
+      whatsapp_connected: whatsappReady(),
+      whatsapp_webhook: whatsappEnabled() ? "/webhook/whatsapp" : null,
       mock_wallet: config.mockWalletBalance,
       tool_mode: config.toolMode,
       models_note: "Set GEMINI_API_KEY (Gemini) or OPENAI_API_KEY (OpenAI / custom LLM_BASE_URL) for real LLM mode; otherwise mock mode runs.",
