@@ -9,6 +9,7 @@ import {
   extractMessages,
   sendWhatsApp,
   handleWhatsappPayload,
+  recipientNotAllowed,
 } from "../src/whatsapp.js";
 import { config } from "../src/config.js";
 
@@ -99,4 +100,29 @@ test("sendWhatsApp: converts **bold** to *bold* (WhatsApp markdown)", async () =
   await sendWhatsApp("2348000000000", "Buy **₦500** airtime for *mtn*?", fake);
   assert.match(sent[0], /Buy \*₦500\* airtime/);
   assert.ok(!sent[0].includes("**"));
+});
+
+test("recipientNotAllowed: matches Meta error 131030", () => {
+  const e = new Error('whatsapp send HTTP 400: {"error":{"message":"(#131030) Recipient phone number not in allowed list"}}');
+  assert.equal(recipientNotAllowed(e), true);
+  assert.equal(recipientNotAllowed(new Error("HTTP 500 boom")), false);
+});
+
+test("handleWhatsappPayload: reply to un-whitelisted number fails quietly (no apology spam)", async () => {
+  const calls = [];
+  const blocked = async (to, text) => {
+    calls.push(text);
+    throw new Error('whatsapp send HTTP 400: {"error":{"message":"(#131030) Recipient phone number not in allowed list","code":131030}}');
+  };
+  const res = await handleWhatsappPayload(fakePayload("help", "16315551181"), { sender: blocked });
+  assert.equal(res.replies.length, 1);
+  assert.equal(res.replies[0].expected, true);
+  assert.equal(res.replies[0].error, "recipient_not_allowed");
+  assert.equal(calls.length, 1, "only the real reply attempt — no apology message");
+});
+
+test("handleWhatsappPayload: payload with only delivery statuses is harmless", async () => {
+  const body = { entry: [{ changes: [{ value: { statuses: [{ id: "wamid.out1", status: "delivered", recipient_id: "2348012345678" }] } }] }] };
+  const res = await handleWhatsappPayload(body, { sender: async () => ({ ok: true }) });
+  assert.equal(res.received, 0);
 });

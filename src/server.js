@@ -8,6 +8,7 @@ import { audit } from "./audit.js";
 import { playgroundHtml } from "./playground.js";
 import { isMock, effectiveLlmMode, llmEndpoint, resolveStoreBackend } from "./config.js";
 import { whatsappEnabled, verifyHandshake, signatureOk, handleWhatsappPayload, whatsappReady } from "./whatsapp.js";
+import { telegramConfigured, telegramSecretOk, handleTelegramUpdate } from "./telegram.js";
 import { startKeepalive, resolveKeepaliveTarget } from "./keepalive.js";
 
 function authorize(req) {
@@ -48,10 +49,42 @@ const server = createServer(async (req, res) => {
       }
       let body = {};
       try { body = raw ? JSON.parse(raw) : {}; } catch { /* malformed */ }
+      // ACCESS LOG: log EVERY webhook arrival (counts only, never content of
+      // messages/statuses). This is the definitive instrument for "did Meta's
+      // delivery actually reach us, and what was in it?"
+      let nMsg = 0, nStat = 0;
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const v = change.value || {};
+          nMsg += (v.messages || []).length;
+          nStat += (v.statuses || []).length;
+        }
+      }
+      log(`[whatsapp] WEBHOOK ARRIVED: sig=${req.headers["x-hub-signature-256"] ? "present" : "none"} messages=${nMsg} statuses=${nStat} entries=${(body.entry || []).length}`);
       // process without blocking the response too long
       handleWhatsappPayload(body).catch((e) => log("[whatsapp] webhook error:", e.message));
       return ok(res, { received: true }); // ack fast (Meta retries on non-200)
     }
+  }
+
+  // ---- Telegram Bot API webhook (Telegram calls this; NO API key needed) ----
+  if (req.method === "POST" && path === "/webhook/telegram") {
+    if (!telegramConfigured()) return err(res, 404, "NOT_CONFIGURED", "TELEGRAM_BOT_TOKEN not set on the server.");
+    const raw = await new Promise((resolve, reject) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      req.on("error", reject);
+    });
+    if (!telegramSecretOk(req.headers["x-telegram-bot-api-secret-token"])) {
+      log("[telegram] secret token mismatch — dropping webhook");
+      return err(res, 403, "BAD_SECRET", "Secret token mismatch.");
+    }
+    let body = {};
+    try { body = raw ? JSON.parse(raw) : {}; } catch { /* malformed */ }
+    log(`[telegram] WEBHOOK ARRIVED: update=${body.update_id ?? "?"} hasMessage=${body.message ? "yes" : "no"}`);
+    handleTelegramUpdate(body).catch((e) => log("[telegram] webhook error:", e.message));
+    return ok(res, { ok: true }); // ack fast — Telegram re-sends until HTTP 200
   }
 
   if (req.method === "GET" && path === "/") {
@@ -66,7 +99,7 @@ const server = createServer(async (req, res) => {
     return ok(res, {
       status: "ok",
       service: "eday-ai",
-      version: "0.2.1",
+      version: "0.4.0",
       llm_provider: effectiveLlmMode(),
       model: isMock() ? "mock" : (config.llmModel || llmEndpoint()?.model || ""),
       store_backend: resolveStoreBackend(),
@@ -122,6 +155,9 @@ const server = createServer(async (req, res) => {
       supabase_connected: Boolean(config.supabaseUrl && config.supabaseServiceKey),
       whatsapp_connected: whatsappReady(),
       whatsapp_webhook: whatsappEnabled() ? "/webhook/whatsapp" : null,
+      telegram_connected: telegramConfigured(),
+      telegram_webhook: telegramConfigured() ? "/webhook/telegram" : null,
+      channels: ["web", ...(whatsappEnabled() ? ["whatsapp"] : []), ...(telegramConfigured() ? ["telegram"] : [])],
       mock_wallet: config.mockWalletBalance,
       tool_mode: config.toolMode,
       models_note: "Set GEMINI_API_KEY (Gemini) or OPENAI_API_KEY (OpenAI / custom LLM_BASE_URL) for real LLM mode; otherwise mock mode runs.",
@@ -135,6 +171,7 @@ server.listen(config.port, "0.0.0.0", () => {
   log(`EDAY AI orchestration listening on http://0.0.0.0:${config.port}`);
   log(`LLM mode: ${effectiveLlmMode()}${isMock() ? " (mock — set OPENAI_API_KEY for real intents)" : " — model " + config.llmModel}`);
   log(`WhatsApp: ${whatsappReady() ? "ready (token+phone id set)" : "NOT ready (need WHATSAPP_TOKEN + WHATSAPP_PHONE_ID)"} · webhook verify-token ${config.whatsappVerifyToken ? "set" : "MISSING"} · app-secret ${config.whatsappAppSecret ? `set (${config.whatsappAppSecret.length} chars)` : "MISSING (signature check skipped)"} · dry-run ${config.whatsappDryRun ? "ON" : "off"}`);
+  log(`Telegram: ${telegramConfigured() ? "READY (bot token set)" : "NOT ready (set TELEGRAM_BOT_TOKEN to enable)"} · secret ${config.telegramSecret ? "set" : "off"} · dry-run ${config.telegramDryRun ? "ON" : "off"}`);
   log(`Open the playground: http://localhost:${config.port}/`);
   // keep-awake heartbeat: Railway puts services to sleep after ~10 min of no
   // OUTBOUND traffic, so the app pings its own public URL on a schedule.

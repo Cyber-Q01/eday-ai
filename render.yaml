@@ -49,6 +49,12 @@ services:
         sync: false        # optional — enables webhook signature verification
       - key: WHATSAPP_DRY_RUN
         value: "false"     # true = log replies instead of sending (testing only)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false        # Telegram @BotFather → /newbot → bot token (free, same host)
+      - key: TELEGRAM_SECRET
+        sync: false        # optional — must match the webhook secret_token if used
+      - key: TELEGRAM_DRY_RUN
+        value: "false"     # true = log replies instead of sending (testing only)
       - key: MOCK_WALLET_BALANCE
         value: "50000"
 

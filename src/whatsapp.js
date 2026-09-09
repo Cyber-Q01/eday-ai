@@ -142,12 +142,26 @@ export function extractMessages(body = {}) {
  */
 const senderQueues = new Map(); // from -> promise chain
 
+/** True when Meta rejects the recipient as not on the dev-mode allowed list. */
+export function recipientNotAllowed(e) {
+  return /131030|not in allowed list/i.test(String((e && e.message) || e || ""));
+}
+
 export async function handleWhatsappPayload(body, opts = {}) {
   const sender = opts.sender || graphSender;
+  // Delivery receipts for messages WE sent (sent/delivered/read) arrive as
+  // webhook statuses — log them so outbound success is visible end-to-end.
+  const statuses = (body.entry || []).flatMap((e) => (e.changes || []).flatMap((c) => c.value?.statuses || []));
+  for (const s of statuses) {
+    log(`[whatsapp] delivery receipt: status=${s.status} msg=${s.id || "?"} to=${s.recipient_id || "?"}`);
+  }
   const messages = extractMessages(body);
   const results = [];
   for (const m of messages) {
     if (!m.text) { results.push({ skipped: true }); continue; }
+    // log every arrival — this is how we can SEE whether Meta delivers a real
+    // user's message at all ("nothing happens when I send from WhatsApp")
+    log(`[whatsapp] inbound from ${m.from}${m.id ? ` (${m.id})` : ""}: ${m.text.slice(0, 100)}`);
     const userId = `wa_${m.from}`;
     const sid = `wa_${m.from}`;
     const run = async () => {
@@ -168,6 +182,14 @@ export async function handleWhatsappPayload(body, opts = {}) {
         return { from: m.from, reply: String(out.reply).slice(0, 80), sent: !!sent.sent };
       } catch (e) {
         if (ackTimer) clearTimeout(ackTimer);
+        // Dev-mode reality: Meta refuses replies to numbers not on the ≤5-number
+        // whitelist — including its own fake 555 test numbers from the dashboard
+        // "Test" button. Expected, not a fault: log once, audit, no apology spam.
+        if (recipientNotAllowed(e)) {
+          log(`[whatsapp] reply to ${m.from} skipped — recipient not in allowed list (dev mode: add real test numbers under Meta → API Testing → To)`);
+          audit.write({ kind: "wa_out", user_id: userId, session: sid, to: m.from, ok: false, expected: "recipient_not_allowed" });
+          return { from: m.from, error: "recipient_not_allowed", expected: true };
+        }
         log("[whatsapp] processing failed:", e.message);
         audit.write({ kind: "wa_out", user_id: userId, session: sid, to: m.from, ok: false, error: String(e.message).slice(0, 200) });
         try { await sendWhatsApp(m.from, "Sorry, something went wrong on my side. Please try again in a moment.", sender); } catch { /* swallow */ }

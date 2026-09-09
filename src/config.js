@@ -64,6 +64,11 @@ export const config = {
   whatsappDryRun: env("WHATSAPP_DRY_RUN", "false") === "true", // log instead of calling Graph (webhook testing w/o token)
   whatsappAck: env("WHATSAPP_ACK", "true") === "true",          // send an instant "one moment" if processing > ~2s (no typing indicator in Cloud API)
   whatsappAckText: env("WHATSAPP_ACK_TEXT", "⏳ One moment — EDAY is on it…"),
+  // Telegram social channel — free bot via @BotFather, no approval needed.
+  telegramBotToken: env("TELEGRAM_BOT_TOKEN", "").trim(),       // from @BotFather (free)
+  telegramSecret: env("TELEGRAM_SECRET", "").trim(),            // optional — must match the webhook secret_token
+  telegramDryRun: env("TELEGRAM_DRY_RUN", "false") === "true",  // log instead of calling Bot API
+  telegramAck: env("TELEGRAM_ACK", "true") === "true",          // native "typing…" while processing
   // keep-awake heartbeat (Railway sleeps services after ~10 min of NO outbound traffic)
   keepaliveUrl: env("KEEPALIVE_URL", "").trim(),          // explicit heartbeat target; "off" disables
   keepaliveIntervalMin: parseInt(env("KEEPALIVE_INTERVAL_MIN", "4"), 10) || 4,

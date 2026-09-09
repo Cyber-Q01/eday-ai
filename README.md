@@ -22,6 +22,21 @@ Open **http://localhost:3000/** — a chat playground. Try:
 
 Test data: meters `41234567890` (IBEDC), `51234567890` (EKEDC), `61234567890` (IKEDC). Every new user gets a ₦50,000 mock wallet. Payments **always ask for confirmation** unless `SKIP_CONFIRM=true` (testing only).
 
+## Social channels — ONE host, all your messengers
+
+This build ships **WhatsApp and Telegram together** on the same deployment (plus the web
+playground): one URL, one Railway service, the same EDAY brain, per-user memory and
+confirmations on every channel. Each channel activates when its env vars are set; the
+boot log prints the state of both.
+
+| Channel | Endpoint | Setup gate |
+|---|---|---|
+| WhatsApp (Meta Cloud API) | `GET/POST /webhook/whatsapp` | Needs the Meta app **published** for real-user traffic (dev mode delivers only dashboard test payloads) |
+| Telegram (Bot API) | `POST /webhook/telegram` | **None** — free @BotFather bot, works immediately |
+| Web playground + `/v1/chat` API | `GET /`, `POST /v1/chat` | None |
+
+Check both: `GET /v1/meta` → `whatsapp_connected`, `telegram_connected`, `channels`.
+
 ## Connect WhatsApp (Meta Cloud API) — free
 
 The service ships a WhatsApp bridge: a real WhatsApp number can chat with EDAY (airtime, electricity, send, ride, stay, chop, shop, work, wallet — same brain, confirm-gated payments). Endpoints:
@@ -45,6 +60,25 @@ The service ships a WhatsApp bridge: a real WhatsApp number can chat with EDAY (
 `WHATSAPP_VERIFY_TOKEN` (required) · `WHATSAPP_TOKEN` · `WHATSAPP_PHONE_ID` · `WHATSAPP_APP_SECRET` (optional) · `WHATSAPP_DRY_RUN` (testing only) · `WHATSAPP_ACK` (default true — sends an instant "one moment" text when a reply takes >2s; the Cloud API has no typing indicator, so this is EDAY's stand-in) · `WHATSAPP_ACK_TEXT`. Each sender maps to user `wa_<number>` with a sticky session — memory and confirmations persist per phone. Message bursts are processed in order.
 
 Check it's live: `GET /v1/meta` → `whatsapp_connected: true`. No API key needed on the webhook itself (Meta cannot add headers).
+
+## Connect Telegram — same host, no approval
+
+Bots on Telegram need no publishing, whitelist, or verification — anyone can chat with the
+bot once its webhook points at your host.
+
+1. In Telegram, message **@BotFather** → `/newbot` → pick a name/username → copy the **bot token**.
+2. Register the webhook (one command, run anywhere):
+   ```bash
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<your-service>.up.railway.app/webhook/telegram"
+   # optional auth: append &secret_token=<yourstring> and set TELEGRAM_SECRET=<yourstring>
+   ```
+3. Env vars on the deploy: `TELEGRAM_BOT_TOKEN` (required) · `TELEGRAM_SECRET` (optional) ·
+   `TELEGRAM_ACK` (default true — sends Telegram's native "typing…" while EDAY works) ·
+   `TELEGRAM_DRY_RUN`.
+
+**Test loop:** open your bot in Telegram → **Start** → `help`, `hello`,
+`buy 500 naira mtn airtime for 08031234567`, `what is my wallet balance?` — each chat maps
+to user `tg_<chatId>`, memory and confirmations persist per user.
 
 ## API
 

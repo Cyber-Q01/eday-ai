@@ -52,6 +52,12 @@ async function chatCompletion(messages, { temperature = 0, useJson = true } = {}
       } catch (e) {
         lastErr = e;
         const retryable = e.status === 429 || e.status >= 500 || e.name === "TimeoutError" || e.name === "AbortError";
+        // Hard quota (free tier exhausted / billing): every model shares the
+        // key, so retrying the chain is pointless — fall back to rules now.
+        if (e.status === 429 && /quota/i.test(String(e.message))) {
+          log(`llm: QUOTA EXCEEDED on ${model} — skipping retries (fix GEMINI_API_KEY/billing)`);
+          break outer;
+        }
         // 400 on json_object → drop response_format and retry the same model
         if (e.status === 400 && jsonMode) {
           log(`llm: response_format rejected (${model}), retrying plain`);
