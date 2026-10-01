@@ -15,6 +15,14 @@ services:
     envVars:
       - key: PORT
         value: 3000
+      - key: TOOL_MODE
+        value: http       # real backend through the ai-actions gateway (mock = simulated only)
+      - key: BACKEND_INTERNAL_URL
+        value: https://bvjjhkyjkuxnetuxnfxo.supabase.co/functions/v1
+      - key: BACKEND_INTERNAL_KEY
+        sync: false       # SECRET — shared secret for ai-actions (same value as the Supabase edge secret)
+      - key: SIGNING_SECRET
+        sync: false       # SECRET — HMAC key for signed handoff tokens
       - key: LLM_PROVIDER
         value: auto        # auto = openai key -> gemini key -> mock (set GEMINI_API_KEY for real)
       - key: GEMINI_API_KEY
@@ -28,7 +36,9 @@ services:
       - key: SUPABASE_URL
         sync: false        # SECRET — your Eday project URL (Project Settings -> API)
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false        # SECRET — your Eday service_role key (server-only!)
+        sync: false        # ONLY for ai_memory/ai_episodes/ai_embeddings/ai_audit storage.
+                           # MONEY NEVER USES IT — all wallet/order/bill actions go through
+                           # ai-actions with BACKEND_INTERNAL_KEY (see TOOL_MODE above).
       - key: EMBEDDING_PROVIDER
         value: auto        # gemini when GEMINI_API_KEY set, else mock (768-dim)
       - key: EMBEDDING_MODEL
