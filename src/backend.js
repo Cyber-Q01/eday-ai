@@ -241,7 +241,7 @@ export const actions = {
     };
     state.orders.set(order.id, order);
     scheduleProgress(order.id, "preparing", "Kitchen is preparing your order", "out_for_delivery", "Rider picked up your order", "delivered", "Order delivered ✓");
-    return { success: true, order, message: `🍛 ${item.label} (₦${total.toLocaleString()}) ordered from ${vendor}, ${city || "Lagos"}. ETA 40 min. Order ID: ${order.id}` };
+    return { success: true, order, message: `${item.label} (₦${total.toLocaleString()}) ordered from ${vendor}, ${city || "Lagos"}. ETA 40 min. Order ID: ${order.id}` };
   },
 
   // ---------- SHOP (commerce) ----------
@@ -268,7 +268,7 @@ export const actions = {
     };
     state.orders.set(order.id, order);
     scheduleProgress(order.id, "packed", "Item packed at EDAY hub", "in_transit", "Shipment in transit", "delivered", "Delivered ✓");
-    return { success: true, order, message: `🛍️ ${pick.label} (₦${pick.price.toLocaleString()}) ordered from EDAY Mall. Delivery 2 days. Order ID: ${order.id}` };
+    return { success: true, order, message: `${pick.label} (₦${pick.price.toLocaleString()}) ordered from EDAY Mall. Delivery 2 days. Order ID: ${order.id}` };
   },
 
   // ---------- WORK (gig/services) ----------
@@ -296,7 +296,7 @@ export const actions = {
     };
     state.orders.set(order.id, order);
     scheduleProgress(order.id, "on_the_way", `${pick.name} is on the way`, "in_progress", "Work started", "completed", "Job completed ✓", 20000);
-    return { success: true, order, message: `🛠️ ${pick.trade}: ${pick.name} matched in ${city || "Lagos"} — ₦${pick.price.toLocaleString()} (arrival ~60 min). Job ID: ${order.id}` };
+    return { success: true, order, message: `${pick.trade}: ${pick.name} matched in ${city || "Lagos"} — ₦${pick.price.toLocaleString()} (arrival ~60 min). Job ID: ${order.id}` };
   },
 
   // ---------- WALLET top-up ----------
@@ -328,7 +328,7 @@ export const actions = {
   help_menu(userId) {
     return {
       success: true,
-      message: "I can help you with: 📱 Airtime & data (e.g. “buy ₦500 MTN airtime for 08031234567”) · ⚡ Electricity (e.g. “pay ₦5000 prepaid for meter 41234567890”) · 📦 Send a package · 🚗 Book a ride · 🏨 Book a stay · 🛍️ Chop/Shop · 💼 Work services · Track orders (send an order ID) · Wallet balance.",
+      message: "I can help you with: Airtime & data (e.g. “buy ₦500 MTN airtime for 08031234567”) · Electricity (e.g. “pay ₦5000 prepaid for meter 41234567890”) · Send a package · Book a ride · Book a stay · Chop/Shop · Work services · Track orders (send an order ID) · Wallet balance.",
     };
   },
 };

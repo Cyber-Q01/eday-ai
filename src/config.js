@@ -41,6 +41,8 @@ export const config = {
   memoryFile: env("MEMORY_FILE", ""),
   auditFile: env("AUDIT_FILE", ""),
   toolMode: env("TOOL_MODE", "mock"), // mock | http
+  backendUrl: env("BACKEND_INTERNAL_URL", "").replace(/\/+$/, ""), // ai-actions base (…/functions/v1)
+  backendKey: env("BACKEND_INTERNAL_KEY", ""), // shared secret for ai-actions (never a user-facing value)
   // embeddings
   embeddingProvider: env("EMBEDDING_PROVIDER", "auto"), // auto | gemini | mock
   embeddingModel: env("EMBEDDING_MODEL", "gemini-embedding-001"),
@@ -63,7 +65,7 @@ export const config = {
   whatsappGraphVersion: env("WHATSAPP_GRAPH_VERSION", "v22.0").trim(),
   whatsappDryRun: env("WHATSAPP_DRY_RUN", "false") === "true", // log instead of calling Graph (webhook testing w/o token)
   whatsappAck: env("WHATSAPP_ACK", "true") === "true",          // send an instant "one moment" if processing > ~2s (no typing indicator in Cloud API)
-  whatsappAckText: env("WHATSAPP_ACK_TEXT", "⏳ One moment — EDAY is on it…"),
+  whatsappAckText: env("WHATSAPP_ACK_TEXT", "One moment — EDAY is on it…"),
   // Telegram social channel — free bot via @BotFather, no approval needed.
   telegramBotToken: env("TELEGRAM_BOT_TOKEN", "").trim(),       // from @BotFather (free)
   telegramSecret: env("TELEGRAM_SECRET", "").trim(),            // optional — must match the webhook secret_token

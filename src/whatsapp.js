@@ -13,6 +13,7 @@ import { config } from "./config.js";
 import { log } from "./util.js";
 import { handleMessage } from "./orchestrator.js";
 import { audit } from "./audit.js";
+import { resolveUser, notLinkedReply, callGateway, linkCacheSet, shouldNudge, setActiveChannel } from "./gateway.js";
 
 export function whatsappEnabled() {
   return Boolean(config.whatsappVerifyToken);
@@ -162,7 +163,28 @@ export async function handleWhatsappPayload(body, opts = {}) {
     // log every arrival — this is how we can SEE whether Meta delivers a real
     // user's message at all ("nothing happens when I send from WhatsApp")
     log(`[whatsapp] inbound from ${m.from}${m.id ? ` (${m.id})` : ""}: ${m.text.slice(0, 100)}`);
-    const userId = `wa_${m.from}`;
+    // AUTH GATE — same fail-closed rule as Telegram. WhatsApp is auto-linked:
+    // Meta delivers the sender's real phone; link_by_phone matches it against
+    // profiles.phone (E.164). Same number, same eday — no code needed.
+    let gate = await resolveUser("whatsapp", `wa_${m.from}`);
+    if (!gate.linked) {
+      const match = await callGateway("link_by_phone", { phone: `+${m.from.replace(/\D/g, "")}`, external_id: `wa_${m.from}` }, { skipUser: true, idempotencyKey: `ai-walink-${m.from}` });
+      if (match.result?.user_id) {
+        linkCacheSet("whatsapp", `wa_${m.from}`, match.result.user_id);
+        gate = { linked: true, user_id: match.result.user_id };
+        audit.write({ kind: "link", channel: "whatsapp", user_id: match.result.user_id, to: m.from, ok: true });
+      }
+    }
+    const linked = !!gate.linked;
+    const userId = linked ? gate.user_id : null;
+    if (!linked) {
+      if (shouldNudge(`wa:${m.from}`)) {
+        const info = notLinkedReply("whatsapp");
+        const sent = await sendWhatsApp(m.from, info.reply, sender);
+        return { from: m.from, reply: info.reply, sent: !!sent.sent };
+      }
+      return { from: m.from, gated: true };
+    }
     const sid = `wa_${m.from}`;
     const run = async () => {
       // WhatsApp's Cloud API has NO typing indicator — so if an answer takes
@@ -175,6 +197,7 @@ export async function handleWhatsappPayload(body, opts = {}) {
         }, 2000);
       }
       try {
+        setActiveChannel("whatsapp");
         const out = await handleMessage({ session_id: sid, user_id: userId, channel: "whatsapp", message: m.text });
         if (ackTimer) clearTimeout(ackTimer);
         const sent = await sendWhatsApp(m.from, out.reply, sender);

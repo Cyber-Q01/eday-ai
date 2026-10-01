@@ -70,7 +70,7 @@ test("offscope refused", async () => {
 test("ride quote then book the car", async () => {
   const s = fresh();
   const r1 = await handleMessage({ ...s, message: "book a ride from Ikeja to the airport" });
-  assert.match(r1.reply, /🚗/);
+  assert.match(r1.reply, /Ikeja → the airport/); // tone pass: no decorative emoji
   const r2 = await handleMessage({ ...s, message: "book the car" });
   assert.equal(r2.pending_confirm, true);
   const r3 = await handleMessage({ ...s, message: "yes" });
@@ -212,7 +212,7 @@ test("chatter: thanks gets a friendly reply (fast path, no LLM)", async () => {
 test("chatter: bye gets a goodbye", async () => {
   const s = fresh();
   const r = await handleMessage({ ...s, message: "bye" });
-  assert.match(r.reply, /Bye|👋/i);
+  assert.match(r.reply, /Bye/i);
 });
 
 test("help is answered instantly even when the LLM is down", async () => {

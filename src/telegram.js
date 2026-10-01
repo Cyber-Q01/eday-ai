@@ -14,6 +14,7 @@ import { config } from "./config.js";
 import { log } from "./util.js";
 import { handleMessage } from "./orchestrator.js";
 import { audit } from "./audit.js";
+import { resolveUser, notLinkedReply, callGateway, linkCacheSet, shouldNudge, setActiveChannel } from "./gateway.js";
 
 export function telegramConfigured() {
   return Boolean(config.telegramBotToken);
@@ -149,7 +150,40 @@ export async function handleTelegramUpdate(body = {}, opts = {}) {
     seenUpdates.set(upd.updateId, now);
   }
   log(`[telegram] inbound chat=${upd.chatId}${upd.name ? ` [${upd.name}]` : ""}: ${upd.text.slice(0, 100)}`);
-  const userId = `tg_${upd.chatId}`;
+  // AUTH GATE — the conversation exists only for linked senders. resolveUser
+  // fails CLOSED: a gateway outage cannot open an unauthenticated chat.
+  const gate = await resolveUser("telegram", `tg_${upd.chatId}`);
+  // INTERCEPT: a 4-digit code from an unlinked chat is a link attempt —
+  // claim it (single-use, 10-min expiry) and re-resolve. "TG <code>" also
+  // works for linked users re-binding a new Telegram account.
+  const codeMatch = /^\s*(?:TG\s*)?(\d{4})\s*$/.exec(upd.text || "");
+  if (codeMatch && (!gate.linked || /^\s*TG\s/i.test(upd.text))) {
+    const claim = await callGateway("claim_channel_link_code", {
+      code: codeMatch[1], external_id: `tg_${upd.chatId}`, channel: "telegram",
+    }, { skipUser: true, idempotencyKey: `ai-claim-${upd.chatId}-${codeMatch[1]}` });
+    if (claim.result?.user_id) {
+      linkCacheSet("telegram", `tg_${upd.chatId}`, claim.result.user_id); // instant, no TTL wait
+      const hello = claim.result.name ? ` Linked as ${claim.result.name}.` : "";
+      const ok = `Linked. This chat now uses your eday account.${hello}`;
+      audit.write({ kind: "link", channel: "telegram", user_id: claim.result.user_id, to: upd.chatId, ok: true });
+      const sent = await sendTelegram(upd.chatId, ok, sender);
+      return { chatId: upd.chatId, reply: ok, sent: !!sent.sent };
+    }
+    const why = claim.result?.error === "INVALID_OR_EXPIRED_CODE"
+      ? "That code isn't valid (or it expired). Open the app → Channels → get a fresh one."
+      : "Couldn't link right now — try again in a moment.";
+    const sent = await sendTelegram(upd.chatId, why, sender);
+    audit.write({ kind: "link", channel: "telegram", to: upd.chatId, ok: false, reason: claim.result?.error ?? "claim_failed" });
+    return { chatId: upd.chatId, reply: why, sent: !!sent.sent };
+  }
+  if (!gate.linked) {
+    const info = notLinkedReply("telegram");
+    // one helpful reply per 10 min per sender — never a reply loop
+    if (!shouldNudge(`tg:${upd.chatId}`)) return { chatId: upd.chatId, gated: true };
+    const sent = await sendTelegram(upd.chatId, info.reply, sender);
+    return { chatId: upd.chatId, reply: info.reply, sent: !!sent.sent };
+  }
+  const userId = gate.user_id;
   const sid = `tg_${upd.chatId}`;
   const run = async () => {
     let typingTimer = null;
@@ -166,6 +200,7 @@ export async function handleTelegramUpdate(body = {}, opts = {}) {
       fire();
     }
     try {
+      setActiveChannel("telegram");
       const out = await handleMessage({ session_id: sid, user_id: userId, channel: "telegram", message: upd.text });
       if (typingTimer) clearTimeout(typingTimer);
       const sent = await sendTelegram(upd.chatId, out.reply, sender);

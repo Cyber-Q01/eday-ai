@@ -1,8 +1,17 @@
 // ---- Tool layer: registry with permissions + confirmation rules + execution.
-//      Every tool maps 1:1 to a backend action (simulated now, real later). ----
+//      Every tool maps 1:1 to a backend action.
+//
+//      ROUTING: TOOL_MODE=http + BACKEND_INTERNAL_URL/KEY → the REAL backend
+//      through the ai-actions edge function (shared-secret gateway, per-run
+//      Idempotency-Key). Results are adapted to the simulated shapes in
+//      gateway.js, so the orchestrator is mode-agnostic. help_menu and
+//      support_ticket stay local; wallet_topup_start answers with the app
+//      path (Paystack top-ups are a wallet flow, not a chat flow) — payments
+//      that MOVE money always go through the real pipeline + confirm gate.
 
 import { config } from "./config.js";
 import * as backend from "./backend.js";
+import { gatewayEnabled, executeViaGateway } from "./gateway.js";
 import { log, uid, nowIso } from "./util.js";
 
 export const PAYMENT_TOOLS = new Set([
@@ -65,6 +74,13 @@ export function confirmationText(name, args = {}, ctx = {}) {
 }
 
 // ---------- execution ----------
+const LOCAL_TOOLS = new Set(["help_menu", "support_ticket"]);
+
+const TOPUP_IN_APP = {
+  success: true,
+  message: "Top-ups live in the eday app for your safety — open Wallet → Top up, and your balance updates here the moment it lands.",
+};
+
 export async function executeTool(name, args, userId, runId) {
   const def = findTool(name);
   if (!def) return { error: "UNKNOWN_TOOL", message: `Unknown tool ${name}` };
@@ -74,15 +90,12 @@ export async function executeTool(name, args, userId, runId) {
   let result;
   let status = "ok";
   try {
-    if (config.toolMode === "http" && config.backendInternalUrl && backend.actions[name] === undefined) {
-      // real-backend mode (later): POST to backend action endpoint with idempotency key
-      const res = await fetch(`${config.backendInternalUrl}/functions/v1/${name}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.backendInternalKey}`, "Idempotency-Key": `ai-${runId}-${name}` },
-        body: JSON.stringify(args),
-      });
-      const t = await res.text().catch(() => "");
-      result = t ? JSON.parse(t) : { status: res.status }; // tolerate empty bodies
+    if (gatewayEnabled() && !LOCAL_TOOLS.has(name)) {
+      // REAL backend through the ai-actions gateway (shared secret +
+      // Idempotency-Key; money moves only inside the DB ledger functions).
+      result = name === "wallet_topup_start"
+        ? TOPUP_IN_APP
+        : await executeViaGateway(name, args || {}, userId, runId);
     } else {
       const fn = backend.actions[name];
       if (!fn) result = { error: "UNAVAILABLE", message: `${name} is not available yet.` };

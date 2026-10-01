@@ -260,7 +260,7 @@ export async function handleMessage({ session_id, user_id, channel, message, con
       if (was.kind === "plan") session.plan = null;
       session.history.push({ role: "assistant", content: "Cancelled — nothing was charged." });
       audit.write({ kind: "confirm", action: "declined", user_id: session.userId, session: sid, ref: was.ref });
-      return reply(session, sid, "❌ Cancelled — nothing was charged. Is there anything else I can help with?");
+      return reply(session, sid, "Cancelled — nothing was charged. Is there anything else I can help with?");
     }
     // mid-confirm edits: "make it 1000", "change the phone to 0805…", "mtn instead"
     const edited = tryEditPending(session, sid, message);
@@ -299,14 +299,14 @@ export async function handleMessage({ session_id, user_id, channel, message, con
 
   if (intent.intent === "greeting") {
     const mem = await memory.recall(session.userId);
-    const hi = mem.prefs?.length ? `Welcome back! 👋 You have ${mem.prefs.length} saved ${mem.prefs.length === 1 ? "preference" : "preferences"}.` : "Hello! 👋";
+    const hi = mem.prefs?.length ? `Welcome back! You have ${mem.prefs.length} saved ${mem.prefs.length === 1 ? "preference" : "preferences"}.` : "Hello!";
     return reply(session, sid, `${hi} I'm the EDAY assistant — I can buy airtime & data, pay electricity bills, send packages, book rides and stays, and more. Try “help” to see what I can do.`, helpActions());
   }
 
   if (intent.intent === "chatter") {
-    if (intent.subtype === "bye") return reply(session, sid, "👋 Bye! Ping me anytime you need EDAY.");
-    if (intent.subtype === "thanks") return reply(session, sid, "You're welcome! 😊 Anything else I can help you with?");
-    return reply(session, sid, "😊 Glad to help! What would you like to do?");
+    if (intent.subtype === "bye") return reply(session, sid, "Bye! Ping me anytime you need EDAY.");
+    if (intent.subtype === "thanks") return reply(session, sid, "You're welcome! Anything else I can help you with?");
+    return reply(session, sid, "Glad to help! What would you like to do?");
   }
 
   if (intent.intent === "offscope") {
@@ -340,12 +340,12 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     const r = await executeTool("send_quote", call.args, session.userId, uid("run"));
     if (r.error) return reply(session, sid, friendlyError(r));
     const best = r.chosen;
-    session.lastQuote = { provider: best.provider, amount: best.amount, eta_minutes: best.eta_minutes, pickup: call.args.pickup, destination: call.args.destination };
+    session.lastQuote = { provider: best.provider, amount: best.amount, eta_minutes: best.eta_minutes, pickup: call.args.pickup, destination: call.args.destination, coords: r.coords || null };
     return reply(session, sid,
       `Here are delivery quotes for **${call.args.pickup} → ${call.args.destination}**:\n` +
       r.quotes.map((q) => `• ${q.provider} (${q.tier}): ${fmtNgn(q.amount)} · ~${q.eta_minutes} min`).join("\n") +
-      `\n\nBest price: **${best.provider} at ${fmtNgn(best.amount)}**. Shall I book it? (reply “book it” or “yes”)`,
-      [{ id: "book", title: "Book it" }, { id: "no", title: "No thanks" }]);
+      `\n\nBest price: **${best.provider} at ${fmtNgn(best.amount)}**. Reply “book it” to continue here, or “app” and I'll hand you to the eday app to finish.`,
+      [{ id: "book", title: "Book it" }, { id: "app", title: "Continue in app" }, { id: "no", title: "No thanks" }]);
   }
 
   if (call.name === "ride_quote") {
@@ -353,7 +353,7 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     if (r.error) return reply(session, sid, friendlyError(r));
     session.lastRide = { pickup: call.args.pickup, destination: call.args.destination, rides: r.rides };
     return reply(session, sid,
-      `🚗 ${call.args.pickup} → ${call.args.destination} (${r.distance_km} km, ~${r.duration_min} min):\n` +
+      `${call.args.pickup} → ${call.args.destination} (${r.distance_km} km, ~${r.duration_min} min):\n` +
       r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
       `\n\nWhich would you like? (reply e.g. “book the Car”)`,
       r.rides.map((x) => ({ id: "ride_" + x.type.toLowerCase(), title: `${x.type} · ${fmtNgn(x.fare)}` })));
@@ -365,21 +365,21 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     session.stayResults = r.results;
     const cityDisp = String(call.args.city || "").replace(/^./, (c) => c.toUpperCase());
     return reply(session, sid,
-      `🏨 Stays in **${cityDisp}** for ${call.args.nights} night(s):\n` +
-      r.results.map((s, i) => `${i + 1}. ${s.name} — ${fmtNgn(s.price_per_night)}/night · ⭐ ${s.rating}`).join("\n") +
+      `Stays in **${cityDisp}** for ${call.args.nights} night(s):\n` +
+      r.results.map((s, i) => `${i + 1}. ${s.name} — ${fmtNgn(s.price_per_night)}/night · rating ${s.rating}`).join("\n") +
       `\n\nReply with the number (1-${r.results.length}) to book, or say “no thanks”.`,
       r.results.map((s, i) => ({ id: "stay_" + (i + 1), title: `${i + 1}. ${s.name.split(" ").slice(0, 2).join(" ")}` })));
   }
 
   if (call.name === "wallet_balance") {
     const r = await executeTool("wallet_balance", {}, session.userId, uid("run"));
-    return reply(session, sid, `💰 Your EDAY wallet balance is **${fmtNgn(r.balance)}**.`);
+    return reply(session, sid, `Your EDAY wallet balance is **${fmtNgn(r.balance)}**.`);
   }
 
   if (call.name === "order_status") {
     const r = await executeTool("order_status", call.args, session.userId, uid("run"));
     if (r.error) return reply(session, sid, friendlyError(r));
-    return reply(session, sid, `📦 Order ${r.order_id} [${r.vertical}] is **${r.status.replace(/_/g, " ")}**.\nLatest: ${r.last_event.note}`);
+    return reply(session, sid, `Order ${r.order_id} [${r.vertical}] is **${r.status.replace(/_/g, " ")}**.\nLatest: ${r.last_event.note}`);
   }
 
   if (call.name === "support_ticket") {
@@ -436,7 +436,7 @@ function tryEditPending(session, sid, message) {
   pc.text = text;
   session.history.push({ role: "assistant", content: text });
   audit.write({ kind: "confirm", action: "updated", user_id: session.userId, session: sid, ref: pc.ref, tool: pc.name, args_summary: summarizeEntities(args) });
-  return { session_id: sid, reply: text, actions: [{ id: "yes", title: "✅ Yes, pay" }, { id: "no", title: "❌ No" }], pending_confirm: true, ref: pc.ref };
+  return { session_id: sid, reply: text, actions: [{ id: "yes", title: "Yes, pay" }, { id: "no", title: "No" }], pending_confirm: true, ref: pc.ref };
 }
 
 /** Deterministic answers that need ONLY session state (cheap, works in mock too):
@@ -456,7 +456,7 @@ function handleContextual(session, sid, message) {
   if (session.lastRide && /\b(option|price|list|again)\b/.test(m) && /\b(show|what|list|again)\b/.test(m) && !/\bbook\b/.test(m) && m.length < 60) {
     const r = session.lastRide;
     return reply(session, sid,
-      `🚗 ${r.pickup} → ${r.destination}:\n` + r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
+      `${r.pickup} → ${r.destination}:\n` + r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
       `\n\nWhich would you like? (reply e.g. “book the Car”)`);
   }
   // — best courier price —
@@ -468,7 +468,7 @@ function handleContextual(session, sid, message) {
   if (session.stayResults && /\b(cheapest|lowest|cheap|first|top)\b/.test(m)) {
     const sorted = [...session.stayResults].sort((a, b) => a.price_per_night - b.price_per_night);
     const s = sorted[0];
-    return reply(session, sid, `The cheapest option is **${s.name} at ${fmtNgn(s.price_per_night)}/night** (⭐ ${s.rating}). Reply with its number to book.`);
+    return reply(session, sid, `The cheapest option is **${s.name} at ${fmtNgn(s.price_per_night)}/night** (rating ${s.rating}). Reply with its number to book.`);
   }
   // — what did I just do? —
   if (session.lastAction && /\bwhat did i (just |last )?(do|buy|order|book|pay|send|request)\b/.test(m)) {
@@ -484,7 +484,7 @@ function handleContextual(session, sid, message) {
     return (async () => {
       const r = await executeTool("order_status", { order_ref: ref }, session.userId, uid("run"));
       if (r.error) return reply(session, sid, friendlyError(r));
-      return reply(session, sid, `📦 Your last order ${r.order_id} [${r.vertical}] is **${r.status.replace(/_/g, " ")}**.\nLatest: ${r.last_event.note}`);
+      return reply(session, sid, `Your last order ${r.order_id} [${r.vertical}] is **${r.status.replace(/_/g, " ")}**.\nLatest: ${r.last_event.note}`);
     })();
   }
   // — "do the same again" reuses the last executed action —
@@ -495,7 +495,7 @@ function handleContextual(session, sid, message) {
       const r = await executeTool(la.name, { ...la.args }, session.userId, uid("run"));
       if (r.error) return reply(session, sid, friendlyError(r));
       storeLastAction(session, la.name, la.args, r);
-      return reply(session, sid, `✅ ${r.message}`);
+      return reply(session, sid, r.message);
     })();
   }
   return null;
@@ -504,6 +504,22 @@ function handleContextual(session, sid, message) {
 function handleQuickAction(session, sid, message) {
   const m = message.trim().toLowerCase();
   if (!m) return null;
+  // "Continue in-app" choice (design §5): hand the user to the eday app to
+  // finish the send with their own authenticated checkout. The deeplink
+  // carries the quote + a signed single-use token (continuity, not authority
+  // — nothing is charged here and the app re-quotes server-side on arrival).
+  if (session.lastQuote && /^\s*(app|in app|in the app|open (the )?app|2)\s*[.!]*$/.test(m)) {
+    const q = session.lastQuote;
+    session.lastQuote = null;
+    // SECURITY: the deeplink carries ADDRESSES ONLY — no token, no amounts,
+    // no authority. The app re-quotes server-side and the user pays through
+    // their own authenticated checkout (the chat never becomes a payment
+    // instrument). The quote is cleared so “book it” starts a FRESH flow.
+    const link = `projecteday://send/pickup?pickup=${encodeURIComponent(q.pickup)}&dropoff=${encodeURIComponent(q.destination)}`;
+    return reply(session, sid,
+      `Here you go — tap to finish in the eday app. You'll confirm the details and pay there:\n${link}`,
+      [{ id: "book", title: "Book it here instead" }]);
+  }
   // Book the previously quoted courier
   if (session.lastQuote && /\b(book|yes|book it|book this|go ahead|proceed)\b/.test(m) && !/\bno\b/.test(m)) {
     const q = session.lastQuote;
@@ -545,13 +561,13 @@ function reply(session, sid, text, actions = []) {  session.history.push({ role:
 
 function helpActions() {
   return [
-    { id: "airtime", title: "📱 Airtime" },
-    { id: "data", title: "🌐 Data" },
-    { id: "electricity", title: "⚡ Electricity" },
-    { id: "send", title: "📦 Send" },
-    { id: "ride", title: "🚗 Ride" },
-    { id: "stay", title: "🏨 Stay" },
-    { id: "wallet", title: "💰 Balance" },
+    { id: "airtime", title: "Airtime" },
+    { id: "data", title: "Data" },
+    { id: "electricity", title: "Electricity" },
+    { id: "send", title: "Send" },
+    { id: "ride", title: "Ride" },
+    { id: "stay", title: "Stay" },
+    { id: "wallet", title: "Balance" },
   ];
 }
 
@@ -560,7 +576,7 @@ function askConfirm(session, sid, call) {
   session.pendingConfirm = { kind: "tool", name: call.name, args: call.args, text, ref: uid("cf") };
   session.history.push({ role: "assistant", content: text });
   audit.write({ kind: "confirm", action: "requested", user_id: session.userId, session: sid, ref: session.pendingConfirm.ref, tool: call.name, args_summary: summarizeEntities(call.args) });
-  return { session_id: sid, reply: text, actions: [{ id: "yes", title: "✅ Yes, pay" }, { id: "no", title: "❌ No" }], pending_confirm: true, ref: session.pendingConfirm.ref };
+  return { session_id: sid, reply: text, actions: [{ id: "yes", title: "Yes, pay" }, { id: "no", title: "No" }], pending_confirm: true, ref: session.pendingConfirm.ref };
 }
 
 async function resumeConfirmed(session, sid) {
@@ -617,12 +633,12 @@ async function fillFromPrefs(session, call) {
 async function runPlan(session, sid, message, intent) {
   const steps = planForTravel(intent, session);
   const text =
-    `✈️ I can arrange your trip to **${intent.entities.city || guessCity(intent.entities.description || message)}** in ${intent.entities.nights || 1} night(s). Here's the plan:\n` +
+    `I can arrange your trip to **${intent.entities.city || guessCity(intent.entities.description || message)}** in ${intent.entities.nights || 1} night(s). Here's the plan:\n` +
     steps.map((s, i) => `${i + 1}. ${s.label}`).join("\n") +
     `\n\nTotal estimate: **${fmtNgn(steps.reduce((a, s) => a + s.amount, 0))}**\nShall I proceed? (reply **Yes**)`;
   session.pendingConfirm = { kind: "plan", text, ref: uid("pl"), steps };
   audit.write({ kind: "plan", action: "proposed", user_id: session.userId, session: sid, steps: steps.map((s) => s.tool) });
-  return reply(session, sid, text, [{ id: "yes", title: "✅ Yes, book all" }, { id: "no", title: "❌ No" }]);
+  return reply(session, sid, text, [{ id: "yes", title: "Yes, book all" }, { id: "no", title: "No" }]);
 }
 
 function planForTravel(intent, session) {
