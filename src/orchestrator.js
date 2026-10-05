@@ -798,7 +798,11 @@ function handleQuickAction(session, sid, message) {
     session.lastQuote = null;
     return askConfirm(session, sid, {
       name: "send_book",
-      args: { pickup: q.pickup, destination: q.destination, provider: q.provider, amount: q.amount, eta_minutes: q.eta_minutes, package_type: q.package_type },
+      // coords MUST ride into the booking args — send-ai validates against
+      // the quoted coordinates and rejects anything else (it never re-
+      // geocodes, so a dropped lat/lng is a hard "Missing quoted
+      // coordinates" failure on confirm).
+      args: { pickup: q.pickup, destination: q.destination, provider: q.provider, amount: q.amount, eta_minutes: q.eta_minutes, package_type: q.package_type, ...(q.coords || {}) },
       missing: [],
     });
   }
