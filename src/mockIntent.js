@@ -31,7 +31,7 @@ function findMeter(t) {
 
 function findNetwork(t) {
   const hit = NETWORKS.find((n) => t.includes(n));
-  return hit || (has(t, "data") ? "mtn" : hit || null);
+  return hit || null; // NEVER guess — a missing network is asked for by the orchestrator
 }
 
 function findDisco(t) {
@@ -80,15 +80,22 @@ export function mockClassifyIntent(text) {
   }
   // bills
   if (has(t, "airtime", "recharge", "top up", "top-up", "buy credit")) {
-    entities.network = entities.network || "mtn";
     return { intent: "service_request", vertical: "bills", subtype: "airtime", entities, multi: [], confidence: 0.93 };
   }
   if (has(t, "data bundle", "data", "internet", "bundle")) { // no "mb"/"gb" tokens — they match inside "plumber", "member"…
-    entities.network = entities.network || "mtn";
     return { intent: "service_request", vertical: "bills", subtype: "data", entities, multi: [], confidence: 0.93 };
   }
   if (has(t, "electricity", "light", "nepa", "meter", "disco", "token", "power")) {
     return { intent: "service_request", vertical: "bills", subtype: "electricity", entities, multi: [], confidence: 0.9 };
+  }
+  // explicitly labeled send addresses — no "from/to" needed:
+  //   "Pickup address is Olomi Ibadan, delivery is Ayegun Ibadan"
+  const pm = raw.match(/pickup(?:\s+address|\s+location)?\s*(?:is|:|-)?\s*([A-Za-z0-9 ,'#.-]{3,45}?)(?=\s*(?:,|\n|\band\b|delivery|drop\s*off|destination|$))/i);
+  const dm = raw.match(/(?:delivery|drop\s*off|destination)(?:\s+address|\s+location)?\s*(?:is|:|-)?\s*([A-Za-z0-9 ,'#.-]{3,45})/i);
+  if (pm || dm) {
+    if (pm) entities.pickup = pm[1].trim();
+    if (dm) entities.destination = dm[1].trim().replace(/\n.*$/, "").trim();
+    return { intent: "service_request", vertical: "send", subtype: "send_package", entities, multi: [], confidence: 0.9 };
   }
   // services
   if (has(t, "courier", "send", "deliver", "package", "parcel", "envelope")) {

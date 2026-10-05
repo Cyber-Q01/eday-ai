@@ -27,6 +27,8 @@ services:
         value: auto        # auto = openai key -> gemini key -> mock (set GEMINI_API_KEY for real)
       - key: GEMINI_API_KEY
         sync: false        # SECRET — set in dashboard: https://aistudio.google.com/apikey (free tier)
+      - key: GEMINI_API_KEYS
+        sync: false        # SECRET — comma-separated fallback keys (rotation on 429/quota)
       - key: OPENAI_API_KEY
         sync: false        # optional — only if you use OpenAI directly
       - key: LLM_BASE_URL

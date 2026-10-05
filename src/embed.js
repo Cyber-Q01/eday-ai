@@ -6,7 +6,7 @@
 //                 good enough to exercise pgvector similarity search end-to-end)
 //      auto = gemini when GEMINI_API_KEY is set, else mock. ----
 
-import { config, effectiveEmbedMode } from "./config.js";
+import { config, effectiveEmbedMode, geminiKeys } from "./config.js";
 import { log } from "./util.js";
 
 const DIM = 768; // matches embeddingDim() — keep in sync with supabase/schema.sql
@@ -18,29 +18,41 @@ export function embedMode() {
 async function geminiEmbed(text) {
   const model = config.embeddingModel || "gemini-embedding-001";
   const dim = config.embeddingDim || 768;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents?key=${encodeURIComponent(config.geminiApiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      requests: [
-        {
-          model: `models/${model}`,
-          content: { parts: [{ text }] },
-          ...(dim ? { outputDimensionality: dim } : {}), // pin 768 to match ai_embeddings vector(768)
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(20_000), // never let a stalled embedder block the flow
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`gemini embed HTTP ${res.status}: ${t.slice(0, 200)}`);
+  const keys = geminiKeys(); // primary + fallbacks — same rotation idea as llm.js
+  let lastErr;
+  for (let i = 0; i < keys.length; i++) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents?key=${encodeURIComponent(keys[i])}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [
+          {
+            model: `models/${model}`,
+            content: { parts: [{ text }] },
+            ...(dim ? { outputDimensionality: dim } : {}), // pin 768 to match ai_embeddings vector(768)
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(20_000), // never let a stalled embedder block the flow
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      lastErr = new Error(`gemini embed HTTP ${res.status}: ${t.slice(0, 200)}`);
+      // rate-limited / bad key → the next key has its own quota; anything else is final
+      const rotated = res.status === 429 || res.status === 401 || res.status === 403;
+      if (rotated && i < keys.length - 1) {
+        log(`embed: HTTP ${res.status} on key #${i + 1}/${keys.length} — trying next key`);
+        continue;
+      }
+      throw lastErr;
+    }
+    const data = await res.json();
+    const values = data?.embeddings?.[0]?.values;
+    if (!Array.isArray(values)) throw new Error("gemini embed: no values in response");
+    return normalize(values);
   }
-  const data = await res.json();
-  const values = data?.embeddings?.[0]?.values;
-  if (!Array.isArray(values)) throw new Error("gemini embed: no values in response");
-  return normalize(values);
+  throw lastErr || new Error("gemini embed failed");
 }
 
 // Deterministic mock embedder: word + char-trigram hashing into DIM buckets,

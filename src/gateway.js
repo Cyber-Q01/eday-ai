@@ -81,11 +81,13 @@ export function linkCacheSet(channel, externalId, userId) {
 }
 
 const lastNudge = new Map();
-/** One unlinked-sender reply per 10 min per sender — never a reply loop. */
+/** One unlinked-sender reply per cooldown per sender — never a reply loop.
+ *  Cooldown defaults to 10 min; override with NUDGE_WINDOW_MS (dev/testing). */
 export function shouldNudge(key) {
   const now = Date.now();
+  const cooldown = config.nudgeWindowMs || 10 * 60 * 1000;
   const last = lastNudge.get(key) || 0;
-  if (now - last < 10 * 60 * 1000) return false;
+  if (now - last < cooldown) return false;
   lastNudge.set(key, now);
   if (lastNudge.size > 1000) for (const [k, t] of lastNudge) if (now - t > 30 * 60 * 1000) lastNudge.delete(k);
   return true;
@@ -165,6 +167,16 @@ export async function executeViaGateway(name, args, userId, runId) {
       plan: args.plan ?? "",
     };
   }
+  if (name === "data_plans") {
+    // Chat-side plan list = the SAME live VTPass catalogue the app renders.
+    const DATA_SERVICE = { mtn: "mtn-data", glo: "glo-data", airtel: "airtel-data" };
+    const svc = DATA_SERVICE[String(args.network || "").toLowerCase()];
+    if (!svc) {
+      return { error: "UNSUPPORTED_NETWORK", message: "Data plans are available for MTN, Glo and Airtel — 9mobile is coming soon." };
+    }
+    action = "bill_variations";
+    payload = { serviceID: svc };
+  }
   if (name === "send_book") {
     payload = {
       reference: `AI${sha(idem).toUpperCase().slice(0, 14)}`,
@@ -234,6 +246,31 @@ export async function executeViaGateway(name, args, userId, runId) {
 
     case "bill_validate":
       return r.status >= 400 || res.error ? fail("METER_NOT_FOUND", res.error || "That meter could not be verified.") : { success: true, ...res };
+
+    case "data_plans": {
+      if (r.status >= 400 || res.error) {
+        // deny() answers at the TOP level (r.error), success payloads nest
+        // under result — check both, or a link/403 masquerades as a blank failure.
+        const why = String(res.error || r.error || "");
+        const setup = res.setup || /setup|being set up/i.test(why);
+        return fail("PLANS_UNAVAILABLE", setup
+          ? "Bill vending is still being set up — plan lists will load once it's live."
+          : why || "I couldn't load the plan list right now — try again in a moment.");
+      }
+      const raw = Array.isArray(res.variations) ? res.variations : [];
+      // VTPass duplicates some codes at different prices — keep one per code,
+      // cheapest wins (same rule the app applies), amounts naira-normalized.
+      const byCode = new Map();
+      for (const v of raw) {
+        const hit = byCode.get(v.code);
+        if (!hit || v.amount < hit.amount) byCode.set(v.code, v);
+      }
+      return {
+        success: true,
+        network: String(args.network || "").toLowerCase(),
+        plans: [...byCode.values()].map((v) => ({ code: v.code, name: v.name, amount: koboToNaira(v.amount) })),
+      };
+    }
 
     case "airtime_purchase":
     case "data_purchase":

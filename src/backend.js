@@ -19,6 +19,38 @@ const DB = {
     ["61234567890", { disco: "ikede", name: "MUSA IBRAHIM", type: "prepaid" }],
   ]),
   airtime: { mtn: { label: "MTN", fee: 0 }, glo: { label: "Glo", fee: 0 }, airtel: { label: "Airtel", fee: 0 }, "9mobile": { label: "9mobile", fee: 0 } },
+  // Fixed-price data bundles per network (mirror of the VTPass variations list
+  // the app renders — mock mode only; http mode fetches LIVE from bill_variations).
+  dataPlans: {
+    mtn: [
+      { code: "mtn-50mb-150", name: "50MB (1 day)", amount: 150 },
+      { code: "mtn-150mb-300", name: "150MB (2 days)", amount: 300 },
+      { code: "mtn-500mb-500", name: "500MB (7 days)", amount: 500 },
+      { code: "mtn-1gb-1000", name: "1GB (30 days)", amount: 1000 },
+      { code: "mtn-1.5gb-1500", name: "1.5GB (30 days)", amount: 1500 },
+      { code: "mtn-2gb-2000", name: "2GB (30 days)", amount: 2000 },
+      { code: "mtn-3gb-3000", name: "3GB (30 days)", amount: 3000 },
+      { code: "mtn-5gb-5000", name: "5GB (30 days)", amount: 5000 },
+    ],
+    glo: [
+      { code: "glo-100mb-100", name: "100MB (1 day)", amount: 100 },
+      { code: "glo-350mb-300", name: "350MB (2 days)", amount: 300 },
+      { code: "glo-750mb-500", name: "750MB (7 days)", amount: 500 },
+      { code: "glo-1.6gb-1000", name: "1.6GB (30 days)", amount: 1000 },
+      { code: "glo-2.9gb-2000", name: "2.9GB (30 days)", amount: 2000 },
+      { code: "glo-4.1gb-3000", name: "4.1GB (30 days)", amount: 3000 },
+      { code: "glo-7.1gb-5000", name: "7.1GB (30 days)", amount: 5000 },
+    ],
+    airtel: [
+      { code: "airtel-100mb-100", name: "100MB (1 day)", amount: 100 },
+      { code: "airtel-300mb-300", name: "300MB (3 days)", amount: 300 },
+      { code: "airtel-1gb-500", name: "1GB (7 days)", amount: 500 },
+      { code: "airtel-1.5gb-1000", name: "1.5GB (30 days)", amount: 1000 },
+      { code: "airtel-2gb-1500", name: "2GB (30 days)", amount: 1500 },
+      { code: "airtel-3gb-2000", name: "3GB (30 days)", amount: 2000 },
+      { code: "airtel-5gb-3500", name: "5GB (30 days)", amount: 3500 },
+    ],
+  },
   stay: [
     { id: "st_abuja01", name: "Transcorp Hilton Abuja", city: "Abuja", price_per_night: 185000, rating: 4.7 },
     { id: "st_abuja02", name: "Fraser Suites Abuja", city: "Abuja", price_per_night: 95000, rating: 4.4 },
@@ -85,6 +117,17 @@ export const actions = {
     };
   },
 
+  data_plans(userId, { network }) {
+    const net = String(network || "").toLowerCase();
+    const plans = DB.dataPlans[net];
+    if (!plans) {
+      return { error: "UNSUPPORTED_NETWORK", message: DB.airtime[net]
+        ? `Data plans for ${net} are coming soon — I have MTN, Glo and Airtel.`
+        : `Which network? I have data plans for MTN, Glo and Airtel.` };
+    }
+    return { success: true, network: net, plans };
+  },
+
   data_purchase(userId, args) {
     const g = guard.airtime(userId, args);
     if (g) return g;
@@ -92,9 +135,9 @@ export const actions = {
     const amt = Number(args.amount_ngn);
     if (w.balance < amt) return { error: "INSUFFICIENT_FUNDS", message: `Your wallet balance is ₦${w.balance.toLocaleString()} — top up first.` };
     ledger(userId, -amt, "debit", `data_${uid()}`, { service: "bills", product: "data", network: args.network, phone: args.phone });
-    const gb = (amt / 1000).toFixed(1);
+    const planLabel = args.plan_name || `${(amt / 1000).toFixed(1)}GB bundle`;
     return { success: true, ref: `DT_${uid().slice(0, 10)}`, service: "data", network: DB.airtime[args.network].label,
-      phone: args.phone, amount: amt, status: "COMPLETED", message: `${gb}GB ${DB.airtime[args.network].label} data activated on ${args.phone}.` };
+      phone: args.phone, amount: amt, status: "COMPLETED", message: `${planLabel} ${DB.airtime[args.network].label} data activated on ${args.phone}.` };
   },
 
   electricity_purchase(userId, args) {

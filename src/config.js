@@ -33,6 +33,10 @@ export const config = {
   llmProvider: env("LLM_PROVIDER", env("LLM_MODE", "auto")), // LLM_MODE kept for back-compat
   openaiApiKey: env("OPENAI_API_KEY", ""),
   geminiApiKey: env("GEMINI_API_KEY", ""),
+  // Extra Gemini keys (comma-separated) — each key is its own project, so its
+  // own free-tier quota. LLM calls rotate to the next key on 429/401 instead
+  // of falling straight back to the rule parser.
+  geminiApiKeys: env("GEMINI_API_KEYS", "").split(",").map((s) => s.trim()).filter(Boolean),
   llmBaseUrl: env("LLM_BASE_URL", ""),                    // custom OpenAI-compatible (LiteLLM/Groq…) — overrides provider default
   llmModel: env("LLM_MODEL", ""),                          // per-provider default below when empty
   skipConfirm: env("SKIP_CONFIRM", "false") === "true",
@@ -47,9 +51,9 @@ export const config = {
   embeddingProvider: env("EMBEDDING_PROVIDER", "auto"), // auto | gemini | mock
   embeddingModel: env("EMBEDDING_MODEL", "gemini-embedding-001"),
   embeddingDim: parseInt(env("EMBEDDING_DIM", "768"), 10),
-  // fallback models tried in order when the primary LLM model returns 429/5xx
-  // (Gemini free tier overloads are common — e.g. "gemini-2.5-flash-lite,gemini-flash-latest")
-  llmFallbackModels: env("LLM_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-flash-latest")
+  // fallback models tried in order when the primary LLM model returns 429/5xx/404
+  // (404 = model unavailable to a key's project — newer projects only get flash-latest)
+  llmFallbackModels: env("LLM_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
     .split(",").map((s) => s.trim()).filter(Boolean),
   backendInternalUrl: env("BACKEND_INTERNAL_URL", ""),
   backendInternalKey: env("BACKEND_INTERNAL_KEY", ""),
@@ -71,6 +75,7 @@ export const config = {
   telegramSecret: env("TELEGRAM_SECRET", "").trim(),            // optional — must match the webhook secret_token
   telegramDryRun: env("TELEGRAM_DRY_RUN", "false") === "true",  // log instead of calling Bot API
   telegramAck: env("TELEGRAM_ACK", "true") === "true",          // native "typing…" while processing
+  nudgeWindowMs: parseInt(env("NUDGE_WINDOW_MS", "600000"), 10) || 600000, // unlinked-sender reply cooldown (default 10 min)
   // keep-awake heartbeat (Railway sleeps services after ~10 min of NO outbound traffic)
   keepaliveUrl: env("KEEPALIVE_URL", "").trim(),          // explicit heartbeat target; "off" disables
   keepaliveIntervalMin: parseInt(env("KEEPALIVE_INTERVAL_MIN", "4"), 10) || 4,
@@ -80,15 +85,27 @@ export const config = {
 // key + LLM_BASE_URL = http://<litellm-host>:4000/v1. Model = alias defined in the proxy.
 const PROVIDER_DEFAULTS = {
   openai: { base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
-  gemini: { base: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-2.5-flash" },
+  // gemini-flash-latest is the ONLY model available to every key generation —
+  // new projects404 on gemini-2.5-flash ("no longer available to new users").
+  gemini: { base: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-flash-latest" },
   litellm: { base: "", model: "gemini-flash" },
 };
 
+// True when ANY Gemini key is configured (primary or fallback list).
+export function hasGeminiKey() {
+  return Boolean(config.geminiApiKey || config.geminiApiKeys.length);
+}
+
+// Deduped, ordered key list: primary first, then fallbacks.
+export function geminiKeys() {
+  return Array.from(new Set([config.geminiApiKey, ...config.geminiApiKeys].filter(Boolean)));
+}
+
 export function effectiveLlmMode() {
   let p = config.llmProvider;
-  if (p === "auto") p = config.openaiApiKey ? "openai" : config.geminiApiKey ? "gemini" : "mock";
-  if (p === "openai" && !config.openaiApiKey) p = config.geminiApiKey ? "gemini" : "mock";
-  if (p === "gemini" && !config.geminiApiKey) p = config.openaiApiKey ? "openai" : "mock";
+  if (p === "auto") p = config.openaiApiKey ? "openai" : hasGeminiKey() ? "gemini" : "mock";
+  if (p === "openai" && !config.openaiApiKey) p = hasGeminiKey() ? "gemini" : "mock";
+  if (p === "gemini" && !hasGeminiKey()) p = config.openaiApiKey ? "openai" : "mock";
   if (p === "litellm" && !(config.openaiApiKey && config.llmBaseUrl)) p = "mock";
   return p;
 }
@@ -102,12 +119,13 @@ export function llmEndpoint() {
   if (p === "mock") return null;
   const def = PROVIDER_DEFAULTS[p] || PROVIDER_DEFAULTS.openai;
   const base = (config.llmBaseUrl || def.base).replace(/\/$/, "");
-  const key = p === "gemini" ? config.geminiApiKey : config.openaiApiKey;
+  const keys = p === "gemini" ? geminiKeys() : [config.openaiApiKey].filter(Boolean);
   return {
     provider: p,
     base,
     model: config.llmModel || def.model,
-    key,
+    key: keys[0] || "", // primary (back-compat)
+    keys,               // full rotation list — llm.js falls through on 429/401
     // Gemini-only: sibling models to fall back to when the primary is overloaded
     fallbackModels: p === "gemini" ? config.llmFallbackModels : [],
   };
@@ -122,8 +140,8 @@ export function resolveStoreBackend() {
 
 export function effectiveEmbedMode() {
   let p = config.embeddingProvider;
-  if (p === "auto") p = config.geminiApiKey ? "gemini" : "mock";
-  if (p === "gemini" && !config.geminiApiKey) p = "mock";
+  if (p === "auto") p = hasGeminiKey() ? "gemini" : "mock";
+  if (p === "gemini" && !hasGeminiKey()) p = "mock";
   return p;
 }
 

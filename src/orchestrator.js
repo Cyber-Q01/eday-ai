@@ -26,6 +26,7 @@ function getSession(sessionId, userId, channel) {
       stayResults: null,           // latest stay search results
       lastAction: null,            // {name, args, message} — last executed action (for "again"/"same")
       lastOrderRef: null,          // id of the most recent order/booking/ticket
+      pendingSlots: null,          // {call} — asked for a missing pickup/destination; next reply is the answer
     });
   }
   return sessions.get(sessionId);
@@ -156,8 +157,16 @@ function mapIntentToCall(intent) {
   const sub = intent.subtype;
   const e = intent.entities || {};
   if (intent.vertical === "bills") {
-    if (sub === "airtime") return { name: "airtime_purchase", args: { network: e.network || "mtn", phone: e.phone, amount_ngn: e.amount_ngn }, missing: missingOf(e, ["phone", "amount_ngn"]) };
-    if (sub === "data") return { name: "data_purchase", args: { network: e.network || "mtn", phone: e.phone, amount_ngn: e.amount_ngn }, missing: missingOf(e, ["phone", "amount_ngn"]) };
+    // NEVER default the network — a guessed network silently sells a bundle
+    // on the wrong carrier. A missing network is asked for first.
+    if (sub === "airtime") return { name: "airtime_purchase", args: { network: e.network || "", phone: e.phone, amount_ngn: e.amount_ngn }, missing: missingOf(e, ["network", "phone", "amount_ngn"]) };
+    if (sub === "data") {
+      const args = { network: e.network || "", phone: e.phone || "", amount_ngn: e.amount_ngn || 0, plan: e.plan || "", plan_name: e.plan_name || "" };
+      // Data is plan-priced (the vendor sells fixed bundles, not open value):
+      // network → plan list → phone. The plan code comes from the LIVE list.
+      const missing = ["network", "plan", "phone"].filter((k) => !args[k]);
+      return { name: "data_purchase", args, missing };
+    }
     if (sub === "electricity") return { name: "electricity_purchase", args: { disco: e.disco, meter_number: e.meter_number, amount_ngn: e.amount_ngn }, missing: missingOf(e, ["meter_number", "amount_ngn"]) };
   }
   if (intent.vertical === "send" && sub === "send_package") {
@@ -214,9 +223,55 @@ function isTravelIntent(intent) {
   return intent.vertical === "stay" && intent.subtype === "travel";
 }
 
+// ---------- quote flows (shared by the main path and slot answers) ----------
+/** An address the geocoder can't pin must never dead-end the chat: offer the
+ *  app handoff (addresses prefilled) where the user drops the exact pin. The
+ *  km-based fare then comes from the app's map-pinned coordinates. */
+function appHandoffForUnresolved(session, sid, kind, args) {
+  const link = `projecteday://send/pickup?pickup=${encodeURIComponent(args.pickup || "")}&dropoff=${encodeURIComponent(args.destination || "")}`;
+  return reply(session, sid,
+    `I couldn't pin that address on the map — I quote between recognised areas. Finish in the eday app and drop the pin exactly on the spot:\n${link}`,
+    [{ id: "app", title: "Open in app" }]);
+}
+
+async function runSendQuote(session, sid, call) {
+  const r = await executeTool("send_quote", call.args, session.userId, uid("run"));
+  if (r.error) {
+    if (r.error === "NO_RESULTS" || /can'?t find|address/i.test(String(r.message || ""))) {
+      return appHandoffForUnresolved(session, sid, "send", call.args);
+    }
+    return reply(session, sid, friendlyError(r));
+  }
+  const best = r.chosen;
+  session.lastQuote = { provider: best.provider, amount: best.amount, eta_minutes: best.eta_minutes, pickup: call.args.pickup, destination: call.args.destination, coords: r.coords || null };
+  return reply(session, sid,
+    `Here are delivery quotes for **${call.args.pickup} → ${call.args.destination}**:\n` +
+    r.quotes.map((q) => `• ${q.provider} (${q.tier}): ${fmtNgn(q.amount)} · ~${q.eta_minutes} min`).join("\n") +
+    `\n\nBest price: **${best.provider} at ${fmtNgn(best.amount)}**. Reply “book it” to continue here, or “app” and I'll hand you to the eday app to finish.`,
+    [{ id: "book", title: "Book it" }, { id: "app", title: "Continue in app" }, { id: "no", title: "No thanks" }]);
+}
+
+async function runRideQuote(session, sid, call) {
+  const r = await executeTool("ride_quote", call.args, session.userId, uid("run"));
+  if (r.error) {
+    if (r.error === "NO_RESULTS" || /can'?t find|address/i.test(String(r.message || ""))) {
+      return appHandoffForUnresolved(session, sid, "ride", call.args);
+    }
+    return reply(session, sid, friendlyError(r));
+  }
+  session.lastRide = { pickup: call.args.pickup, destination: call.args.destination, rides: r.rides };
+  return reply(session, sid,
+    `${call.args.pickup} → ${call.args.destination} (${r.distance_km} km, ~${r.duration_min} min):\n` +
+    r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
+    `\n\nWhich would you like? (reply e.g. “book the Car”)`,
+    r.rides.map((x) => ({ id: "ride_" + x.type.toLowerCase(), title: `${x.type} · ${fmtNgn(x.fare)}` })));
+}
+
 // ---------- ask for missing info ----------
 function askMissing(call) {
   const label = {
+    network: "the network (MTN, Glo, Airtel or 9mobile)",
+    plan: "the data plan",
     phone: "the recipient's phone number",
     amount_ngn: "the amount",
     meter_number: "the meter number",
@@ -227,6 +282,158 @@ function askMissing(call) {
     description: "what you'd like (e.g. \"jollof rice and chicken\", \"a plumber\", \"a smartwatch\")",
   };
   return `Almost there — I need ${call.missing.map((m) => label[m] || m).join(" and ")}.`;
+}
+
+// ---------- bills flow: network → plan list → phone → confirm ----------
+const BILL_TOOLS = ["airtime_purchase", "data_purchase", "electricity_purchase"];
+const DISCOS = ["ibedc", "ikede", "ekedc", "aedc", "bedc", "eedc", "phedc", "kaduna"];
+
+function normalizeNetwork(text) {
+  const t = String(text || "").toLowerCase();
+  if (/\b(9mobile|etisalat)\b/.test(t)) return "9mobile";
+  for (const n of ["mtn", "glo", "airtel"]) {
+    if (new RegExp(`(^|[^a-z0-9])${n}([^a-z0-9]|$)`).test(t)) return n;
+  }
+  return "";
+}
+
+/** Place a bills slot answer by TYPE, not position: users answer whatever
+ *  they choose ("0803…" while we asked for the network, "mtn" while we
+ *  asked for the phone). Falls back to the first open slot. */
+function placeBillAnswer(args, missing, text) {
+  const t = String(text || "").trim();
+  let key = "";
+  if (/^0[789][01]\d{8}$/.test(t)) key = "phone";
+  else if (normalizeNetwork(t)) key = "network";
+  else if (/^\d{11}$/.test(t)) key = "meter_number";
+  else if (DISCOS.some((d) => new RegExp(`(^|[^a-z0-9])${d}([^a-z0-9]|$)`).test(t.toLowerCase()))) key = "disco";
+  else if (/^₦?\d{1,7}$/.test(t)) key = "amount_ngn";
+  if (!key || !missing.includes(key)) key = missing[0] || "";
+  if (!key) return "";
+  if (key === "network") args[key] = normalizeNetwork(t) || t.toLowerCase();
+  else if (key === "disco") args[key] = DISCOS.find((d) => t.toLowerCase().includes(d)) || t;
+  else if (key === "amount_ngn") args[key] = parseInt(t.replace(/[^\d]/g, ""), 10);
+  else args[key] = t;
+  return key;
+}
+
+/** Resolve a plan-list reply: number ("2"), price ("500", "₦1,000") or size ("1.5gb"). */
+function resolvePlan(plans, text) {
+  if (!Array.isArray(plans) || !plans.length) return null;
+  const t = String(text || "").trim().toLowerCase().replace(/[₦,\s]/g, "");
+  if (!t) return null;
+  if (/^\d{1,2}$/.test(t)) {
+    const i = parseInt(t, 10);
+    if (i >= 1 && i <= plans.length) return plans[i - 1];
+  }
+  if (/^\d{3,7}(n|ngn|naira)?$/.test(t)) {
+    const byPrice = plans.find((p) => Number(p.amount) === parseInt(t, 10));
+    if (byPrice) return byPrice;
+  }
+  const size = t.match(/^(\d+(?:\.\d+)?)(gb|mb)$/);
+  if (size) {
+    const wantMb = parseFloat(size[1]) * (size[2] === "gb" ? 1024 : 1);
+    const planMb = (name) => {
+      const m = String(name).match(/(\d+(?:\.\d+)?)\s*(gb|mb)/i);
+      if (!m) return 0;
+      return parseFloat(m[1]) * (m[2].toLowerCase() === "gb" ? 1024 : 1);
+    };
+    const bySize = plans.find((p) => planMb(p.name) === wantMb);
+    if (bySize) return bySize;
+  }
+  return null;
+}
+
+function planListText(plans, network) {
+  // Group by duration (Daily / Weekly / Monthly / Other) — the same buckets
+  // the app's Data screen renders, so chat and app tell one story and the
+  // full catalogue never dumps as a single wall of lines. Numbering runs
+  // across the whole list so "reply with the number" keeps working.
+  const spanDays = (name) => {
+    const t = String(name || "").toLowerCase();
+    let m = t.match(/(\d+(?:\.\d+)?)\s*(day|days|d)\b/);
+    if (m) return Number(m[1]);
+    m = t.match(/(\d+(?:\.\d+)?)\s*(week|weeks|wk|w)\b/);
+    if (m) return Number(m[1]) * 7;
+    m = t.match(/(\d+(?:\.\d+)?)\s*(month|months|mnth|mon)\b/);
+    if (m) return Number(m[1]) * 30;
+    m = t.match(/(\d+(?:\.\d+)?)\s*(year|years|yr)\b/);
+    if (m) return Number(m[1]) * 365;
+    if (/\bmonthly\b/.test(t)) return 30;
+    if (/\bweekly\b/.test(t)) return 7;
+    if (/\b(daily|nightly|weekend|overnight)\b/.test(t)) return 1;
+    return null;
+  };
+  const groupOf = (p) => {
+    const days = spanDays(p.name);
+    if (days === null) return "Other";
+    if (days <= 2) return "Daily";
+    if (days <= 8) return "Weekly";
+    if (days <= 45) return "Monthly";
+    return "Other";
+  };
+  const ORDER = ["Daily", "Weekly", "Monthly", "Other"];
+  const buckets = new Map();
+  for (const p of plans) {
+    const g = groupOf(p);
+    if (!buckets.has(g)) buckets.set(g, []);
+    buckets.get(g).push(p);
+  }
+  let n = 0;
+  const sections = ORDER.filter((g) => buckets.has(g)).map((g) => {
+    const lines = buckets.get(g).map((p) => `${++n}. ${p.name} — ${fmtNgn(p.amount)}`);
+    return `*${g}:*\n${lines.join("\n")}`;
+  });
+  return `${String(network || "").toUpperCase()} data plans:\n\n${sections.join("\n\n")}\n\nReply with the number to pick one (or tell me the size, e.g. "1.5GB").`;
+}
+
+async function savedPrefValue(userId, key) {
+  try {
+    const mem = await memory.recall(userId);
+    return mem?.prefs?.find((p) => p.key === key)?.value || "";
+  } catch { return ""; }
+}
+
+/** Data flow steps ONE question at a time: network → plan list → phone → confirm. */
+async function dataFlowStep(session, sid, call) {
+  const args = { ...call.args };
+  if (!args.network) {
+    const pref = await savedPrefValue(session.userId, "default_network");
+    if (pref) args.network = pref;
+    else {
+      session.pendingSlots = { call: { ...call, args, missing: ["network"] } };
+      return reply(session, sid, "Which network? I have data plans for **MTN, Glo and Airtel**.");
+    }
+  }
+  if (!args.plan) return showDataPlans(session, sid, { ...call, args });
+  if (!args.phone) {
+    session.pendingSlots = { call: { ...call, args, missing: ["phone"] } };
+    return reply(session, sid, askMissing({ ...call, args, missing: ["phone"] }));
+  }
+  session.dataPlans = null;
+  return askConfirm(session, sid, { ...call, args, missing: [] });
+}
+
+/** Show the LIVE plan list for the chosen network (the same VTPass catalogue
+ *  the app renders). An amount stated up front ("₦500 data") auto-picks an
+ *  exact price match; anything else waits for a numbered/size reply. */
+async function showDataPlans(session, sid, call) {
+  const r = await executeTool("data_plans", { network: call.args.network }, session.userId, uid("run"));
+  const net = String(call.args.network || "").toUpperCase();
+  if (r.error || !Array.isArray(r.plans) || !r.plans.length) {
+    const msg = r.error === "UNSUPPORTED_NETWORK" || r.error === "PLANS_UNAVAILABLE"
+      ? String(r.message || "")
+      : `I couldn't load ${net} data plans right now — try again in a moment.`;
+    session.pendingSlots = { call: { ...call, missing: ["plan", "phone"].filter((k) => !call.args[k]) } };
+    return reply(session, sid, `${msg}\n\nYou can also pick one in the eday app: projecteday://bills/airtime`);
+  }
+  const wanted = Number(call.args.amount_ngn || 0);
+  const hit = wanted ? r.plans.find((p) => Number(p.amount) === wanted) : null;
+  if (hit) return dataFlowStep(session, sid, { ...call, args: { ...call.args, plan: hit.code, plan_name: hit.name, amount_ngn: hit.amount } });
+  session.dataPlans = r.plans;
+  const remaining = ["plan", "phone"].filter((k) => !call.args[k]);
+  session.pendingSlots = { call: { ...call, args: { ...call.args }, missing: remaining } };
+  return reply(session, sid, planListText(r.plans, call.args.network));
 }
 
 // ---------- reply assembly ----------
@@ -276,6 +483,76 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     // ambiguous while waiting
     session.history.pop(); // don't store this as regular user turn yet
     return reply(session, sid, `Please reply **Yes** to confirm or **No** to cancel.\n\n${session.pendingConfirm.text}`);
+  }
+
+  // 1a) pending slot answers: "Ayegun" while we asked for the destination —
+  //     accept the reply as the missing arg WITHOUT re-classifying it (the
+  //     fallback intent parser has no memory and would read a bare area name
+  //     as offscope, and an LLM blip must not break a half-done flow).
+  if (session.pendingSlots) {
+    const { call } = session.pendingSlots;
+    const text = message.trim();
+    if (/^(no|nope|cancel|stop|forget it|never mind)\b/i.test(text)) {
+      session.pendingSlots = null;
+      session.history.pop();
+      return reply(session, sid, "No problem — cancelled. What would you like to do?");
+    }
+    if (BARE_HELP.test(text) || /^\s*(yes|yeah|yep|ok|okay|sure|fine)\s*[.!]*\s*$/i.test(text)) {
+      session.pendingSlots = null; // not an address — fall through to normal handling
+    } else if (call.name === "data_purchase" && call.missing.includes("plan")) {
+      // plan pick: number / price / size — or a network switch ("glo instead")
+      const net = normalizeNetwork(text);
+      if (net && net !== call.args.network) {
+        session.dataPlans = null;
+        return showDataPlans(session, sid, { ...call, args: { ...call.args, network: net, plan: "", plan_name: "", amount_ngn: 0 } });
+      }
+      if (!session.dataPlans?.length) return showDataPlans(session, sid, call); // list lost — refetch
+      const picked = resolvePlan(session.dataPlans, text);
+      if (picked) {
+        const args = { ...call.args, plan: picked.code, plan_name: picked.name, amount_ngn: picked.amount };
+        session.pendingSlots = null;
+        return dataFlowStep(session, sid, { ...call, args, missing: [] });
+      }
+      return reply(session, sid, `${planListText(session.dataPlans, call.args.network)}\n\n(number, price or size — e.g. 2 · ₦500 · 1.5GB)`);
+    } else if (text.length >= 3 || (BILL_TOOLS.includes(call.name) && /^\d{1,7}$/.test(text))) {
+      const args = { ...call.args };
+      const scrub = (s) => s.replace(/^\s*(?:pickup|drop\s*off|delivery|destination|from|to)\s*(?:address|location)?\s*(?:is|:|-)?\s*/i, "").trim();
+      if (BILL_TOOLS.includes(call.name)) {
+        placeBillAnswer(args, call.missing, text); // typed placement — answer what you choose
+      } else if (call.missing.length > 1) {
+        // "Pickup is Olomi, delivery is Ayegun" / "Olomi to Ayegun" in one message
+        const m = /^(.{3,60}?)\s*(?:,|→|->|\bto\b|\bthen\b)\s*(.{3,60})$/i.exec(text);
+        if (m) {
+          args[call.missing[0]] = scrub(m[1]);
+          args[call.missing[1]] = scrub(m[2]);
+        } else {
+          args[call.missing[0]] = text; // one at a time
+        }
+      } else {
+        args[call.missing[0]] = text;
+      }
+      const remaining = call.missing.filter((s) => !args[s]);
+      if (remaining.length) {
+        session.pendingSlots = { call: { ...call, args, missing: remaining } };
+        const ask = BILL_TOOLS.includes(call.name) ? [remaining[0]] : remaining;
+        return reply(session, sid, askMissing({ ...call, args, missing: ask }));
+      }
+      session.pendingSlots = null;
+      if (BILL_TOOLS.includes(call.name)) {
+        // bills complete into the data flow's next step or the confirm gate
+        if (call.name === "data_purchase") return dataFlowStep(session, sid, { ...call, args, missing: [] });
+        if (needsConfirm(call.name)) return askConfirm(session, sid, { ...call, args, missing: [] });
+        const r = await executeTool(call.name, args, session.userId, uid("run"));
+        if (r.error) return reply(session, sid, friendlyError(r));
+        storeLastAction(session, call.name, args, r);
+        return reply(session, sid, r.message || "Done.");
+      }
+      session.history.pop(); // the answer feeds the tool run, not a new turn
+      if (call.name === "send_quote") return runSendQuote(session, sid, { ...call, args, missing: [] });
+      if (call.name === "ride_quote") return runRideQuote(session, sid, { ...call, args, missing: [] });
+    } else {
+      session.pendingSlots = null;
+    }
   }
 
   // 1b) quick replies from quote flows (no pending confirm yet): book the quoted send,
@@ -330,34 +607,20 @@ export async function handleMessage({ session_id, user_id, channel, message, con
     return reply(session, sid, "I didn't catch that. Could you rephrase? For example: “buy ₦500 MTN airtime for 08031234567” or “send a package from Ikeja to Yaba”.");
   }
   if (call.missing.length) {
+    // data: one question at a time — network → live plan list → phone
+    if (call.name === "data_purchase") return dataFlowStep(session, sid, call);
     const prefs = await fillFromPrefs(session, call);
     if (prefs) return prefs;
-    return reply(session, sid, askMissing(call));
+    // address/bills slots: remember we asked, so the next reply is treated as
+    // the answer — a bare "mtn" or area name must never be reclassified
+    const firstOnly = BILL_TOOLS.includes(call.name);
+    if (call.name === "send_quote" || call.name === "ride_quote" || firstOnly) session.pendingSlots = { call };
+    return reply(session, sid, askMissing(firstOnly ? { ...call, missing: [call.missing[0]] } : call));
   }
 
   // quote-style tools: read, then offer the paid follow-up
-  if (call.name === "send_quote") {
-    const r = await executeTool("send_quote", call.args, session.userId, uid("run"));
-    if (r.error) return reply(session, sid, friendlyError(r));
-    const best = r.chosen;
-    session.lastQuote = { provider: best.provider, amount: best.amount, eta_minutes: best.eta_minutes, pickup: call.args.pickup, destination: call.args.destination, coords: r.coords || null };
-    return reply(session, sid,
-      `Here are delivery quotes for **${call.args.pickup} → ${call.args.destination}**:\n` +
-      r.quotes.map((q) => `• ${q.provider} (${q.tier}): ${fmtNgn(q.amount)} · ~${q.eta_minutes} min`).join("\n") +
-      `\n\nBest price: **${best.provider} at ${fmtNgn(best.amount)}**. Reply “book it” to continue here, or “app” and I'll hand you to the eday app to finish.`,
-      [{ id: "book", title: "Book it" }, { id: "app", title: "Continue in app" }, { id: "no", title: "No thanks" }]);
-  }
-
-  if (call.name === "ride_quote") {
-    const r = await executeTool("ride_quote", call.args, session.userId, uid("run"));
-    if (r.error) return reply(session, sid, friendlyError(r));
-    session.lastRide = { pickup: call.args.pickup, destination: call.args.destination, rides: r.rides };
-    return reply(session, sid,
-      `${call.args.pickup} → ${call.args.destination} (${r.distance_km} km, ~${r.duration_min} min):\n` +
-      r.rides.map((x) => `• ${x.type}: ${fmtNgn(x.fare)}`).join("\n") +
-      `\n\nWhich would you like? (reply e.g. “book the Car”)`,
-      r.rides.map((x) => ({ id: "ride_" + x.type.toLowerCase(), title: `${x.type} · ${fmtNgn(x.fare)}` })));
-  }
+  if (call.name === "send_quote") return runSendQuote(session, sid, call);
+  if (call.name === "ride_quote") return runRideQuote(session, sid, call);
 
   if (call.name === "stay_search") {
     const r = await executeTool("stay_search", call.args, session.userId, uid("run"));
@@ -427,10 +690,19 @@ function tryEditPending(session, sid, message) {
   if (phone && args.phone !== undefined) { args.phone = phone[1]; changed = true; }
   const meter = m.match(/\b(\d{11})\b/);
   if (meter && args.meter_number !== undefined) { args.meter_number = meter[1]; changed = true; }
+  let netChanged = false;
   for (const net of ["mtn", "glo", "airtel", "9mobile"]) {
-    if (new RegExp(`\\b${net}\\b`).test(m) && args.network !== undefined) { args.network = net; changed = true; }
+    if (new RegExp(`\\b${net}\\b`).test(m) && args.network !== undefined && args.network !== net) { args.network = net; changed = true; netChanged = true; }
   }
   if (!changed) return null;
+  // the chosen plan belongs to the OLD network — leave the confirm gate and
+  // re-pick from the new network's live list
+  if (netChanged && pc.name === "data_purchase" && args.plan) {
+    args.plan = ""; args.plan_name = ""; args.amount_ngn = 0;
+    session.pendingConfirm = null;
+    audit.write({ kind: "confirm", action: "updated", user_id: session.userId, session: sid, ref: pc.ref, tool: pc.name, args_summary: summarizeEntities(args) });
+    return showDataPlans(session, sid, { name: pc.name, args, missing: [] });
+  }
 
   const text = confirmationText(pc.name, args) + "\n\nReply **Yes** to confirm, **No** to cancel.";
   pc.text = text;
@@ -606,7 +878,7 @@ async function maybeLearnPref(session, tool, args) {
   session.prefsPrompted = true;
   try {
     if (tool === "airtime_purchase" && args.phone) await memory.addPreference(session.userId, "default_airtime_phone", args.phone);
-    if (tool === "airtime_purchase" && args.network) await memory.addPreference(session.userId, "default_network", args.network);
+    if ((tool === "airtime_purchase" || tool === "data_purchase") && args.network) await memory.addPreference(session.userId, "default_network", args.network);
     if (tool === "electricity_purchase" && args.meter_number) await memory.addPreference(session.userId, "default_meter", args.meter_number);
   } catch (e) { /* never break the reply on memory */ }
 }

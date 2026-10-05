@@ -27,7 +27,10 @@ const PLACES = [
   'Utako, Abuja', 'Lugbe, Abuja', 'Kubwa, Abuja',
   // Ibadan & others
   'Bodija, Ibadan', 'Dugbe, Ibadan', 'University of Ibadan', 'Olomi, Ibadan',
-  'Challenge, Ibadan', 'Port Harcourt', 'Kano', 'Benin City', 'Enugu', 'Kaduna',
+  'Challenge, Ibadan', 'Ayegun, Ibadan', 'Olunde, Ibadan', 'Ring Road, Ibadan',
+  'Mokola, Ibadan', 'Sango, Ibadan', 'Eleyele, Ibadan', 'Ojoo, Ibadan',
+  'Akobo, Ibadan', 'Apata, Ibadan', 'Gate, Ibadan',
+  'Port Harcourt', 'Kano', 'Benin City', 'Enugu', 'Kaduna',
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -43,13 +46,16 @@ async function geocode(q) {
 }
 
 async function sql(query) {
-  const res = await fetch(`https://api.supabase.com/v1/projects/${REF}/database/query`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error(`SQL failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await fetch(`https://api.supabase.com/v1/projects/${REF}/database/query`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (res.ok) return res.json();
+    if (attempt === 3) throw new Error(`SQL failed: ${res.status} ${await res.text()}`);
+    await sleep(2000 * attempt); // transient 5xx from the management API — back off and retry
+  }
 }
 
 (async () => {

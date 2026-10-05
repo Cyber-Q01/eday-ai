@@ -5,3 +5,6 @@ node_modules/
 data/
 *.log
 .DS_Store
+
+# local tunnel artifacts (cloudflared binary, server log)
+.tmp/

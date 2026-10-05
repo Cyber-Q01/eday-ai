@@ -23,7 +23,8 @@ export const toolDefs = [
   { name: "wallet_balance", permission: "read", vertical: "wallet", desc: "Current wallet balance" },
   { name: "wallet_topup_start", permission: "confirm_each", vertical: "wallet", desc: "Start wallet top-up (card link)" },
   { name: "airtime_purchase", permission: "confirm_each", vertical: "bills", desc: "Buy airtime (network, phone, amount)" },
-  { name: "data_purchase", permission: "confirm_each", vertical: "bills", desc: "Buy data bundle (network, phone, amount)" },
+  { name: "data_plans", permission: "read", vertical: "bills", desc: "List data plans for a network" },
+  { name: "data_purchase", permission: "confirm_each", vertical: "bills", desc: "Buy data bundle (network, phone, plan)" },
   { name: "electricity_purchase", permission: "confirm_each", vertical: "bills", desc: "Pay electricity (disco, meter, amount)" },
   { name: "send_quote", permission: "read", vertical: "send", desc: "Quote package delivery (pickup, destination)" },
   { name: "send_book", permission: "confirm_each", vertical: "send", desc: "Book a courier for a quoted price" },
@@ -59,7 +60,7 @@ export function confirmationText(name, args = {}, ctx = {}) {
   const amt = args.amount_ngn ?? args.amount ?? args.fare ?? args.total ?? 0;
   const pieces = {
     airtime_purchase: `Buy ₦${amt?.toLocaleString?.() ?? amt} airtime for ${args.network || "?"} (${args.phone || "?"})?`,
-    data_purchase: `Buy ₦${amt} data bundle for ${args.network || "?"} (${args.phone || "?"})?`,
+    data_purchase: `Buy${args.plan_name ? ` ${args.plan_name}` : ` ₦${amt} data bundle`} for ${args.network || "?"} (${args.phone || "?"})?`,
     electricity_purchase: `Pay ₦${amt}${args.disco ? " " + args.disco : ""} electricity for meter ${args.meter_number || "?"}?`,
     send_book: `Book courier ${args.provider || ""} for ₦${amt} (${args.pickup || ""} → ${args.destination || ""})?`,
     ride_book: `Book ${args.ride_type || "Car"} for ₦${amt} (${args.pickup || ""} → ${args.destination || ""})?`,
