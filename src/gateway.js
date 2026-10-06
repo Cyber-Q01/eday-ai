@@ -190,6 +190,18 @@ export async function executeViaGateway(name, args, userId, runId) {
     };
   }
   if (name === "send_track") { action = "send_track"; payload = { reference: args.order_ref ?? args.reference ?? "" }; }
+  if (name === "chop_order") {
+    // items: [{ name, qty, price_ngn, menuId? }] from the orchestrator — the
+    // edge function validates menu ids and recomputes all money server-side.
+    action = "chop_order";
+    payload = {
+      restaurantId: args.restaurant_id || args.restaurantId || "",
+      deliverTo: args.deliver_to || args.deliverTo || args.address || "",
+      cookingNote: args.cooking_note || args.note || "",
+      items: (Array.isArray(args.items) ? args.items : [])
+        .map((it) => ({ menuId: it.menuId ?? it.menu_id ?? it.id ?? "", qty: Math.max(1, Math.round(Number(it.qty ?? 1))) })),
+    };
+  }
   if (name === "order_status") { action = "send_track"; payload = { reference: args.order_ref ?? "" }; }
   if (name === "wallet_balance") { action = "wallet_balance"; payload = {}; }
   if (name === "send_handoff") { idem = `ai-handoff-${runId}`; }
@@ -287,6 +299,19 @@ export async function executeViaGateway(name, args, userId, runId) {
 
     case "send_handoff":
       return r.status >= 400 || res.error ? fail("HANDOFF_FAILED", "I couldn't prepare the app handoff — we can finish right here instead.") : { success: true, deeplink: res.deeplink, token: res.token, expires_at: res.expires_at };
+
+    case "chop_order": {
+      if (r.status === 402) return fail("INSUFFICIENT_FUNDS", "Your wallet balance is too low for this order — top up first, then ask me to retry.");
+      if (r.status === 429) return fail("RATE_LIMITED", "Too many orders in a row — try again in a little while.");
+      if (r.status >= 400 || res.error) return fail("ORDER_FAILED", res.error || "The order did not go through — nothing was charged.");
+      return {
+        success: true,
+        ref: res.reference,
+        status: "COMPLETED",
+        order_id: res.order_id,
+        message: res.message || "Order placed.",
+      };
+    }
 
     default:
       return res;
